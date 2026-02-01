@@ -7,6 +7,192 @@ import subprocess
 import argparse
 import tempfile
 import shutil
+import zipfile
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.spatial.transform import Rotation
+
+
+def read_tum_trajectory(filepath):
+    """
+    Read a TUM format trajectory file.
+    Returns timestamps, positions (Nx3), and quaternions (Nx4, xyzw format).
+    """
+    timestamps = []
+    positions = []
+    quaternions = []
+    
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) >= 8:
+                timestamps.append(float(parts[0]))
+                positions.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                quaternions.append([float(parts[4]), float(parts[5]), float(parts[6]), float(parts[7])])
+    
+    return np.array(timestamps), np.array(positions), np.array(quaternions)
+
+
+def load_alignment_from_evo_zip(zip_path):
+    """
+    Load the alignment transformation from evo's saved results zip file.
+    Returns rotation matrix (3x3), translation (3,), and scale (float).
+    """
+    import io
+    
+    with zipfile.ZipFile(zip_path, 'r') as z:
+        # Read the alignment parameters from the zip - evo stores as .npy (4x4 matrix)
+        if 'alignment_transformation_sim3.npy' in z.namelist():
+            with z.open('alignment_transformation_sim3.npy') as f:
+                # Load numpy array from zip
+                data = np.load(io.BytesIO(f.read()))
+                # data is a 4x4 Sim(3) matrix: [s*R | t; 0 0 0 1]
+                rotation_scaled = data[:3, :3]
+                translation = data[:3, 3]
+                # Extract scale from the rotation matrix (scale is uniform)
+                scale = np.linalg.norm(rotation_scaled[:, 0])
+                rotation = rotation_scaled / scale
+                return rotation, translation, scale
+        elif 'alignment_transformation_se3.npy' in z.namelist():
+            with z.open('alignment_transformation_se3.npy') as f:
+                data = np.load(io.BytesIO(f.read()))
+                rotation = data[:3, :3]
+                translation = data[:3, 3]
+                return rotation, translation, 1.0
+        else:
+            # No alignment found, return identity
+            print("Warning: No alignment transformation found in zip, using identity.")
+            return np.eye(3), np.zeros(3), 1.0
+
+
+def apply_alignment(positions, rotation, translation, scale):
+    """
+    Apply Sim(3) alignment transformation to positions.
+    aligned = scale * R @ positions.T + translation
+    """
+    aligned = scale * (rotation @ positions.T).T + translation
+    return aligned
+
+
+def plot_aligned_trajectories(experiment_folder, pairs):
+    """
+    Plot aligned robot trajectories with different colors and labels.
+    Reads the alignment transformation from evo_ape's saved results.
+    Formatted for IEEE single-column journal standard.
+    """
+    evo_zip_path = os.path.join(experiment_folder, "evo_ape.zip")
+    
+    if not os.path.exists(evo_zip_path):
+        print(f"Error: {evo_zip_path} not found. Run evo_ape first.")
+        return
+    
+    # Load alignment transformation
+    rotation, translation, scale = load_alignment_from_evo_zip(evo_zip_path)
+    print(f"Alignment - Scale: {scale:.6f}")
+    print(f"Translation: {translation}")
+    
+    # IEEE single-column formatting with Times New Roman
+    # Single column width: 3.5 inches (88.9mm)
+    # Use Type 1 fonts for IEEE compatibility
+    plt.rcParams.update({
+        'text.usetex': True,
+        'text.latex.preamble': r'\usepackage{times}',
+        'font.family': 'serif',
+        'font.serif': ['Times'],
+        'font.size': 8,
+        'axes.labelsize': 8,
+        'axes.titlesize': 8,
+        'legend.fontsize': 7,
+        'xtick.labelsize': 7,
+        'ytick.labelsize': 7,
+        'figure.figsize': (3.5, 3.0),  # Single column width, reasonable height
+        'figure.dpi': 300,
+        'savefig.dpi': 300,
+        'axes.linewidth': 0.5,
+        'lines.linewidth': 1.0,
+        'patch.linewidth': 0.5,
+        'pdf.fonttype': 42,  # TrueType fonts for IEEE
+        'ps.fonttype': 42,
+    })
+    
+    # Set up the plot
+    fig, ax = plt.subplots()
+    
+    # Color map for different robots
+    colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(pairs))))
+    
+    # Plot each robot's trajectory
+    for idx, p in enumerate(pairs):
+        robot_path = p['robot_path']
+        gt_path = p['gt_path']
+        
+        # Extract robot name from filename
+        robot_name = os.path.basename(robot_path).replace('.tum', '')
+        
+        # Read trajectories
+        _, est_positions, _ = read_tum_trajectory(robot_path)
+        _, gt_positions, _ = read_tum_trajectory(gt_path)
+        
+        if len(est_positions) == 0:
+            print(f"Warning: Empty trajectory for {robot_name}")
+            continue
+        
+        # Apply alignment to estimated trajectory
+        aligned_positions = apply_alignment(est_positions, rotation, translation, scale)
+        
+        # Plot estimated (aligned) trajectory
+        ax.plot(aligned_positions[:, 0], aligned_positions[:, 1], 
+                color=colors[idx % len(colors)], linewidth=1.0, 
+                label=f'{robot_name}')
+    
+    # Plot ground truth (each robot separately to avoid jump lines)
+    gt_plotted = False
+    for p in pairs:
+        _, gt_positions, _ = read_tum_trajectory(p['gt_path'])
+        if len(gt_positions) > 0:
+            # Only add label for the first GT trajectory
+            label = 'Ground Truth' if not gt_plotted else None
+            ax.plot(gt_positions[:, 0], gt_positions[:, 1], color='gray', linewidth=0.5, alpha=0.5, 
+                    linestyle='--', label=label)
+            gt_plotted = True
+    
+    ax.set_xlabel('X (m)')
+    ax.set_ylabel('Y (m)')
+    ax.legend(loc='best', framealpha=0.9, edgecolor='none')
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3, linewidth=0.3)
+    
+    # Tight layout for publication
+    plt.tight_layout(pad=0.5)
+    
+    # Save the plot (single column: 3.5 inches)
+    output_path = os.path.join(experiment_folder, "trajectories_aligned.pdf")
+    plt.savefig(output_path, bbox_inches='tight', pad_inches=0.02)
+    print(f"\nTrajectory plot saved to: {output_path}")
+    
+    # Also save as PNG for quick preview
+    output_png = os.path.join(experiment_folder, "trajectories_aligned.png")
+    plt.savefig(output_png, bbox_inches='tight', pad_inches=0.02)
+    print(f"Trajectory plot saved to: {output_png}")
+    
+    # Save half-column sized copy (1.67 inches for IEEE half-column)
+    fig.set_size_inches(1.67, 1.5)
+    plt.tight_layout(pad=0.3)
+    
+    output_path_half = os.path.join(experiment_folder, "trajectories_aligned_half.pdf")
+    plt.savefig(output_path_half, bbox_inches='tight', pad_inches=0.01)
+    print(f"Half-column plot saved to: {output_path_half}")
+    
+    output_png_half = os.path.join(experiment_folder, "trajectories_aligned_half.png")
+    plt.savefig(output_png_half, bbox_inches='tight', pad_inches=0.01)
+    print(f"Half-column plot saved to: {output_png_half}")
+    
+    plt.close()
+
 
 def find_trajectory_pairs(experiment_folder):
     """
@@ -170,6 +356,10 @@ def main():
         except FileNotFoundError:
              print("\nError: 'evo_rpe' command not found. Please ensure evo is installed and in your PATH.")
              sys.exit(1)
+
+        # Plot aligned trajectories
+        print("\nPlotting aligned trajectories...")
+        plot_aligned_trajectories(experiment_folder, pairs)
 
 if __name__ == "__main__":
     main()
