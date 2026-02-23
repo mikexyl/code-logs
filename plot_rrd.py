@@ -259,7 +259,7 @@ def main() -> None:
     parser.add_argument("rrd_file", type=Path, help="Path to the .rrd file")
     parser.add_argument(
         "--landmarks", action="store_true",
-        help="Visualize /map/*/landmarks with Open3D"
+        help="Visualize /map/*/landmarks with PyVista"
     )
     args = parser.parse_args()
 
