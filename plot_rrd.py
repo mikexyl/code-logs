@@ -241,12 +241,18 @@ def visualize_landmarks(rrd_file: Path) -> None:
             s_world = (T @ np.hstack([s, ones]).T).T[:, :3].astype(np.float32)
             transformed_strips.append(s_world)
 
-        # Read per-strip colors from the recording (Colors:rgba component)
-        colors_raw = _last_valid(table, f"{entity}:Colors:rgba")
+        # Read per-strip colors from the recording
+        colors_raw = _last_valid(table, f"{entity}:LineStrips3D:colors")
         if colors_raw is not None:
             strip_colors = _unpack_rgba(colors_raw).tolist()  # one [r,g,b] per strip
+            print(f"  using recorded colors ({len(strip_colors)} entries)")
         else:
+            # Debug: show available columns to help identify the correct name
+            traj_cols = [c for c in table.schema.names if entity in c and "color" in c.lower()]
+            if traj_cols:
+                print(f"  color columns found but not matched: {traj_cols}")
             strip_colors = [palette[idx % len(palette)]] * len(transformed_strips)
+            print(f"  using fallback palette color")
 
         trajs.append((transformed_strips, strip_colors))
 
