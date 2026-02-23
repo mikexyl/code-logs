@@ -1,1 +1,13 @@
 *.png
+
+# Experiment data folders
+a12/
+a34/
+a567/
+a5678/
+g123/
+g156/
+g2345/
+gate/
+campus/
+campus.zip

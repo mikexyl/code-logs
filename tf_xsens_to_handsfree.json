@@ -1,0 +1,9 @@
+{
+  "_comment": "Transform from GT frame (Xsens IMU) to robot frame (Handsfree IMU). T_gt_robot = T_lidar_handsfree^-1 * T_lidar_xsens. Source: M2DGR calibration_results.txt",
+  "rotation": [
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0]
+  ],
+  "translation": [0.43160, 0.00014, 0.01130]
+}

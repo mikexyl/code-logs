@@ -78,11 +78,72 @@ def apply_alignment(positions, rotation, translation, scale):
     return aligned
 
 
-def plot_aligned_trajectories(experiment_folder, pairs):
+def load_frame_transform(tf_file):
+    """
+    Load a transformation matrix from a file specifying the transform
+    between the ground truth frame and the robot frame.
+    Supported formats:
+      - JSON with key "matrix" (4x4 list) or keys "rotation" (3x3) and "translation" (3,)
+      - Plain text with a 4x4 whitespace-delimited matrix
+    Returns a 4x4 numpy array (SE3).
+    """
+    if tf_file is None:
+        return np.eye(4)
+
+    ext = os.path.splitext(tf_file)[1].lower()
+
+    if ext in ('.json', '.yaml', '.yml'):
+        if ext == '.json':
+            with open(tf_file, 'r') as f:
+                data = json.load(f)
+        else:
+            import yaml
+            with open(tf_file, 'r') as f:
+                data = yaml.safe_load(f)
+
+        if 'matrix' in data:
+            T = np.array(data['matrix'], dtype=float)
+            assert T.shape == (4, 4), "matrix must be 4x4"
+        elif 'rotation' in data and 'translation' in data:
+            R = np.array(data['rotation'], dtype=float)
+            t = np.array(data['translation'], dtype=float)
+            T = np.eye(4)
+            T[:3, :3] = R
+            T[:3, 3] = t
+        else:
+            raise ValueError(f"Unrecognized keys in {tf_file}. Expected 'matrix' or 'rotation'+'translation'.")
+    else:
+        # Plain text: 4x4 matrix
+        T = np.loadtxt(tf_file)
+        assert T.shape == (4, 4), "Plain-text transform file must contain a 4x4 matrix"
+
+    return T
+
+
+def apply_frame_transform(positions, T):
+    """
+    Apply a 4x4 SE3 transform to an Nx3 array of positions.
+    Returns Nx3 transformed positions.
+    """
+    if np.allclose(T, np.eye(4)):
+        return positions
+    ones = np.ones((positions.shape[0], 1))
+    pts_h = np.hstack([positions, ones])  # Nx4
+    transformed = (T @ pts_h.T).T         # Nx4
+    return transformed[:, :3]
+
+
+def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
     """
     Plot aligned robot trajectories with different colors and labels.
     Reads the alignment transformation from evo_ape's saved results.
     Formatted for IEEE single-column journal standard.
+
+    Args:
+        tf_gt_robot: optional 4x4 numpy array transforming points from the
+                     ground truth frame into the robot/world frame.  When
+                     provided it is applied to the GT trajectory before
+                     plotting so both trajectories share a common frame.
     """
     evo_zip_path = os.path.join(experiment_folder, "evo_ape.zip")
     
@@ -151,12 +212,14 @@ def plot_aligned_trajectories(experiment_folder, pairs):
     
     # Plot ground truth (each robot separately to avoid jump lines)
     gt_plotted = False
+    T_gt = tf_gt_robot if tf_gt_robot is not None else np.eye(4)
     for p in pairs:
         _, gt_positions, _ = read_tum_trajectory(p['gt_path'])
         if len(gt_positions) > 0:
+            gt_positions = apply_frame_transform(gt_positions, T_gt)
             # Only add label for the first GT trajectory
             label = 'Ground Truth' if not gt_plotted else None
-            ax.plot(gt_positions[:, 0], gt_positions[:, 1], color='gray', linewidth=0.5, alpha=0.5, 
+            ax.plot(gt_positions[:, 0], gt_positions[:, 1], color='gray', linewidth=0.5, alpha=0.5,
                     linestyle='--', label=label)
             gt_plotted = True
     
@@ -235,7 +298,17 @@ def find_trajectory_pairs(experiment_folder):
 def main():
     parser = argparse.ArgumentParser(description="Combine TUM trajectories and run evo ATE evaluation.")
     parser.add_argument("experiment_folder", help="Path to the experiment folder")
-    
+    parser.add_argument(
+        "--tf_file",
+        default=None,
+        help=(
+            "Path to a file specifying the SE3 transform from the ground truth frame "
+            "to the robot frame. Supported formats: JSON/YAML with a 'matrix' key (4x4) "
+            "or 'rotation' (3x3) + 'translation' (3,) keys; or a plain-text 4x4 matrix. "
+            "When provided, this transform is applied to the GT trajectory before plotting."
+        ),
+    )
+
     args = parser.parse_args()
     
     experiment_folder = os.path.abspath(args.experiment_folder)
@@ -359,7 +432,10 @@ def main():
 
         # Plot aligned trajectories
         print("\nPlotting aligned trajectories...")
-        plot_aligned_trajectories(experiment_folder, pairs)
+        tf_gt_robot = load_frame_transform(args.tf_file)
+        if args.tf_file:
+            print(f"Applying GT→robot transform from: {args.tf_file}")
+        plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=tf_gt_robot)
 
 if __name__ == "__main__":
     main()
