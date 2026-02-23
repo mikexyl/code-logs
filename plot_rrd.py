@@ -274,7 +274,7 @@ def visualize_landmarks(rrd_file: Path) -> None:
             cloud,
             scalars="rgb",
             rgb=True,
-            point_size=2.0,
+            point_size=1.5,
             render_points_as_spheres=False,
         )
         actors.append(actor)
@@ -283,7 +283,7 @@ def visualize_landmarks(rrd_file: Path) -> None:
         for strip, color in zip(strips, strip_colors):
             if len(strip) >= 2:
                 line = pv.lines_from_points(strip)
-                plotter.add_mesh(line, color=color, line_width=2.0)
+                plotter.add_mesh(line, color=color, line_width=4.0)
 
     def set_point_size(value: float) -> None:
         for actor in actors:
@@ -293,7 +293,7 @@ def visualize_landmarks(rrd_file: Path) -> None:
     plotter.add_slider_widget(
         callback=set_point_size,
         rng=[1, 20],
-        value=2.0,
+        value=1.5,
         title="Point Size",
         pointa=(0.025, 0.1),
         pointb=(0.225, 0.1),
