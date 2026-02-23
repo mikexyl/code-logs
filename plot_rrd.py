@@ -47,6 +47,7 @@ def _unpack_rgba(packed: list[int]) -> np.ndarray:
     return np.stack([r, g, b], axis=1)
 
 
+
 # ---------------------------------------------------------------------------
 # Schema printer
 # ---------------------------------------------------------------------------
@@ -126,8 +127,13 @@ def visualize_landmarks(rrd_file: Path) -> None:
             print("  No position data found, skipping.")
             continue
 
-        pts = np.array(positions, dtype=np.float32)
+        pts = np.array(positions, dtype=np.float64)
         print(f"  {len(pts)} points")
+
+        # Landmarks are already stored in the global map frame.
+        # The Transform3D at this entity is the robot pose, not a transform
+        # to apply to the points.
+        pts = pts.astype(np.float32)
 
         colors_raw = _last_valid(table, f"{entity}:Points3D:colors")
         if colors_raw is not None:
