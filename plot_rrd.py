@@ -214,18 +214,35 @@ def visualize_landmarks(rrd_file: Path) -> None:
 
     print("\nLaunching PyVista viewer  (Q to quit) ...")
     plotter = pv.Plotter(window_size=(1280, 960))
-    plotter.set_background([0.05, 0.05, 0.05])
+    plotter.set_background([1.0, 1.0, 1.0])
 
+    actors = []
     for pts, rgb in clouds:
         cloud = pv.PolyData(pts)
         cloud["rgb"] = (rgb * 255).astype(np.uint8)
-        plotter.add_points(
+        actor = plotter.add_points(
             cloud,
             scalars="rgb",
             rgb=True,
             point_size=2.0,
             render_points_as_spheres=False,
         )
+        actors.append(actor)
+
+    def set_point_size(value: float) -> None:
+        for actor in actors:
+            actor.GetProperty().SetPointSize(value)
+        plotter.render()
+
+    plotter.add_slider_widget(
+        callback=set_point_size,
+        rng=[1, 20],
+        value=2.0,
+        title="Point Size",
+        pointa=(0.025, 0.1),
+        pointb=(0.225, 0.1),
+        style="modern",
+    )
 
     plotter.show()
 
