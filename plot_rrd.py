@@ -142,11 +142,17 @@ def visualize_landmarks(rrd_file: Path) -> None:
          if col.entity_path.endswith("/landmarks")}
     )
 
-    if not landmark_entities:
-        print("No landmark entities found.")
+    traj_entities = sorted(
+        {col.entity_path for col in recording.schema().component_columns()
+         if "/traj/" in col.entity_path}
+    )
+
+    if not landmark_entities and not traj_entities:
+        print("No landmark or trajectory entities found.")
         return
 
-    print(f"Found landmark entities: {landmark_entities}")
+    print(f"Found landmark entities:   {landmark_entities}")
+    print(f"Found trajectory entities: {traj_entities}")
 
     # Fallback colors per robot when the recording has no per-point color
     palette = [
@@ -203,14 +209,50 @@ def visualize_landmarks(rrd_file: Path) -> None:
 
         clouds.append((pts, rgb))
 
-    if not clouds:
+    # --- Load trajectories ---
+    trajs = []   # list of (list of Nx3 float32 strips, color [r,g,b])
+    for idx, entity in enumerate(traj_entities):
+        print(f"\nQuerying trajectory '{entity}' ...")
+
+        view = dataset.filter_contents(entity)
+        table = view.reader(index="log_time").to_arrow_table()
+
+        # Try LineStrips3D (growing strip — last frame has full trajectory)
+        strips_raw = _last_valid(table, f"{entity}:LineStrips3D:strips")
+        if strips_raw is not None:
+            strips = [np.array(s, dtype=np.float64) for s in strips_raw if len(s) >= 2]
+        else:
+            # Fallback: individual positions logged per frame
+            pos_raw = _last_valid(table, f"{entity}:Points3D:positions")
+            if pos_raw is None:
+                print("  No trajectory data found, skipping.")
+                continue
+            strips = [np.array(pos_raw, dtype=np.float64)]
+
+        print(f"  {sum(len(s) for s in strips)} points across {len(strips)} strip(s)")
+
+        # Apply transform at /map/traj/<robot_name>
+        T = _get_transform_matrix(table, entity)
+        print(f"  T_traj translation: {T[:3, 3].round(3)}")
+
+        transformed_strips = []
+        for s in strips:
+            ones = np.ones((len(s), 1), dtype=np.float64)
+            s_world = (T @ np.hstack([s, ones]).T).T[:, :3].astype(np.float32)
+            transformed_strips.append(s_world)
+
+        color = palette[idx % len(palette)]
+        trajs.append((transformed_strips, color))
+
+    if not clouds and not trajs:
         print("No data to visualize.")
         return
 
-    print("\n=== Point Cloud Summary ===")
-    for entity, (pts, _) in zip(landmark_entities, clouds):
-        print(f"  {entity}: {len(pts)} points  "
-              f"bbox=[{pts.min(axis=0).round(2)}, {pts.max(axis=0).round(2)}]")
+    if clouds:
+        print("\n=== Point Cloud Summary ===")
+        for entity, (pts, _) in zip(landmark_entities, clouds):
+            print(f"  {entity}: {len(pts)} points  "
+                  f"bbox=[{pts.min(axis=0).round(2)}, {pts.max(axis=0).round(2)}]")
 
     print("\nLaunching PyVista viewer  (Q to quit) ...")
     plotter = pv.Plotter(window_size=(1280, 960))
@@ -228,6 +270,12 @@ def visualize_landmarks(rrd_file: Path) -> None:
             render_points_as_spheres=False,
         )
         actors.append(actor)
+
+    for strips, color in trajs:
+        for strip in strips:
+            if len(strip) >= 2:
+                line = pv.lines_from_points(strip)
+                plotter.add_mesh(line, color=color, line_width=2.0)
 
     def set_point_size(value: float) -> None:
         for actor in actors:
@@ -259,7 +307,7 @@ def main() -> None:
     parser.add_argument("rrd_file", type=Path, help="Path to the .rrd file")
     parser.add_argument(
         "--landmarks", action="store_true",
-        help="Visualize /map/*/landmarks with PyVista"
+        help="Visualize /map/*/landmarks and /map/traj/* with PyVista"
     )
     args = parser.parse_args()
 
