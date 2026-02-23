@@ -31,11 +31,52 @@ def _open_dataset(rrd_file: Path):
 
 def _last_valid(table, column_name: str):
     """Return the last non-null value in a PyArrow table column as a Python list."""
-    col = table.column(column_name)
+    try:
+        col = table.column(column_name)
+    except KeyError:
+        return None
     for i in range(len(col) - 1, -1, -1):
         if col[i].is_valid:
             return col[i].as_py()
     return None
+
+
+def _quat_xyzw_to_matrix(q: np.ndarray) -> np.ndarray:
+    """Convert xyzw quaternion to 3x3 rotation matrix."""
+    x, y, z, w = q.flatten()
+    return np.array([
+        [1 - 2*(y*y + z*z),     2*(x*y - w*z),     2*(x*z + w*y)],
+        [    2*(x*y + w*z), 1 - 2*(x*x + z*z),     2*(y*z - w*x)],
+        [    2*(x*z - w*y),     2*(y*z + w*x), 1 - 2*(x*x + y*y)],
+    ])
+
+
+def _get_transform_matrix(table, entity: str) -> np.ndarray:
+    """Extract a 4x4 SE3 transform from Rerun Transform3D columns; identity if absent."""
+    T = np.eye(4)
+
+    # Translation
+    for suffix in ["Translation3D:translation", "Transform3D:translation"]:
+        val = _last_valid(table, f"{entity}:{suffix}")
+        if val is not None:
+            T[:3, 3] = np.array(val, dtype=np.float64).flatten()[:3]
+            break
+
+    # Rotation: try quaternion (xyzw in Rerun)
+    for suffix in ["RotationQuat:quaternion", "Transform3D:quaternion"]:
+        val = _last_valid(table, f"{entity}:{suffix}")
+        if val is not None:
+            T[:3, :3] = _quat_xyzw_to_matrix(np.array(val, dtype=np.float64))
+            return T
+
+    # Rotation: try 3x3 matrix
+    for suffix in ["TransformMat3x3:coeffs", "RotationMat3x3:coeffs"]:
+        val = _last_valid(table, f"{entity}:{suffix}")
+        if val is not None:
+            T[:3, :3] = np.array(val, dtype=np.float64).reshape(3, 3)
+            return T
+
+    return T
 
 
 def _unpack_rgba(packed: list[int]) -> np.ndarray:
@@ -119,6 +160,11 @@ def visualize_landmarks(rrd_file: Path) -> None:
     for idx, entity in enumerate(landmark_entities):
         print(f"\nQuerying last frame of '{entity}' ...")
 
+        # entity  = "map/<robot_name>/landmarks"
+        # parent  = "map/<robot_name>"
+        parent_entity = entity.rsplit("/", 1)[0]
+
+        # --- query landmark entity (points + its local transform) ---
         view = dataset.filter_contents(entity)
         table = view.reader(index="log_time").to_arrow_table()
 
@@ -130,10 +176,23 @@ def visualize_landmarks(rrd_file: Path) -> None:
         pts = np.array(positions, dtype=np.float64)
         print(f"  {len(pts)} points")
 
-        # Landmarks are already stored in the global map frame.
-        # The Transform3D at this entity is the robot pose, not a transform
-        # to apply to the points.
-        pts = pts.astype(np.float32)
+        # T2: transform logged at /map/<robot_name>/landmarks
+        T_landmarks = _get_transform_matrix(table, entity)
+
+        # --- query parent entity for its transform ---
+        parent_view = dataset.filter_contents(parent_entity)
+        parent_table = parent_view.reader(index="log_time").to_arrow_table()
+        # T1: transform logged at /map/<robot_name>
+        T_robot = _get_transform_matrix(parent_table, parent_entity)
+
+        # Compose: T_world = T_robot @ T_landmarks, then apply to points
+        T_world = T_robot @ T_landmarks
+        ones = np.ones((len(pts), 1), dtype=np.float64)
+        pts_world = (T_world @ np.hstack([pts, ones]).T).T[:, :3]
+        print(f"  T_robot translation: {T_robot[:3, 3].round(3)}")
+        print(f"  T_landmarks translation: {T_landmarks[:3, 3].round(3)}")
+
+        pts = pts_world.astype(np.float32)
 
         colors_raw = _last_valid(table, f"{entity}:Points3D:colors")
         if colors_raw is not None:
