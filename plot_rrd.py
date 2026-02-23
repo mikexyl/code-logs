@@ -279,26 +279,59 @@ def visualize_landmarks(rrd_file: Path) -> None:
         )
         actors.append(actor)
 
+    traj_actors = []
     for strips, strip_colors in trajs:
         for strip, color in zip(strips, strip_colors):
             if len(strip) >= 2:
+                # Darken the trajectory color relative to the point cloud color
+                dark_color = [max(0.0, c * 0.55) for c in color]
                 line = pv.lines_from_points(strip)
-                plotter.add_mesh(line, color=color, line_width=4.0)
+                traj_actor = plotter.add_mesh(line, color=dark_color, line_width=4.0)
+                traj_actors.append(traj_actor)
 
     def set_point_size(value: float) -> None:
         for actor in actors:
             actor.GetProperty().SetPointSize(value)
         plotter.render()
 
+    def set_line_width(value: float) -> None:
+        for actor in traj_actors:
+            actor.GetProperty().SetLineWidth(value)
+        plotter.render()
+
+    def take_screenshot() -> None:
+        path = str(rrd_file.with_suffix(".png"))
+        plotter.screenshot(path)
+        print(f"Screenshot saved to {path}")
+
     plotter.add_slider_widget(
         callback=set_point_size,
-        rng=[1, 20],
+        rng=[0.5, 2.0],
         value=1.5,
         title="Point Size",
-        pointa=(0.025, 0.1),
-        pointb=(0.225, 0.1),
+        pointa=(0.025, 0.10),
+        pointb=(0.225, 0.10),
         style="modern",
     )
+    plotter.add_slider_widget(
+        callback=set_line_width,
+        rng=[1.0, 10.0],
+        value=4.0,
+        title="Traj Width",
+        pointa=(0.025, 0.02),
+        pointb=(0.225, 0.02),
+        style="modern",
+    )
+    plotter.add_checkbox_button_widget(
+        callback=lambda _: take_screenshot(),
+        value=False,
+        position=(10, 100),
+        size=30,
+        color_on="steelblue",
+        color_off="steelblue",
+        background_color="white",
+    )
+    plotter.add_text("Screenshot", position=(45, 105), font_size=9, color="black")
 
     plotter.show()
 
