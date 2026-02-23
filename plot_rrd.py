@@ -241,8 +241,14 @@ def visualize_landmarks(rrd_file: Path) -> None:
             s_world = (T @ np.hstack([s, ones]).T).T[:, :3].astype(np.float32)
             transformed_strips.append(s_world)
 
-        color = palette[idx % len(palette)]
-        trajs.append((transformed_strips, color))
+        # Read per-strip colors from the recording (Colors:rgba component)
+        colors_raw = _last_valid(table, f"{entity}:Colors:rgba")
+        if colors_raw is not None:
+            strip_colors = _unpack_rgba(colors_raw).tolist()  # one [r,g,b] per strip
+        else:
+            strip_colors = [palette[idx % len(palette)]] * len(transformed_strips)
+
+        trajs.append((transformed_strips, strip_colors))
 
     if not clouds and not trajs:
         print("No data to visualize.")
@@ -271,8 +277,8 @@ def visualize_landmarks(rrd_file: Path) -> None:
         )
         actors.append(actor)
 
-    for strips, color in trajs:
-        for strip in strips:
+    for strips, strip_colors in trajs:
+        for strip, color in zip(strips, strip_colors):
             if len(strip) >= 2:
                 line = pv.lines_from_points(strip)
                 plotter.add_mesh(line, color=color, line_width=2.0)
