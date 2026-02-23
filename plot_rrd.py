@@ -283,7 +283,6 @@ def visualize_landmarks(rrd_file: Path) -> None:
     for strips, strip_colors in trajs:
         for strip, color in zip(strips, strip_colors):
             if len(strip) >= 2:
-                # Darken the trajectory color relative to the point cloud color
                 dark_color = [max(0.0, c * 0.55) for c in color]
                 line = pv.lines_from_points(strip)
                 traj_actor = plotter.add_mesh(line, color=dark_color, line_width=4.0)
@@ -299,21 +298,51 @@ def visualize_landmarks(rrd_file: Path) -> None:
             actor.GetProperty().SetLineWidth(value)
         plotter.render()
 
+    slider_widgets = []
+    checkbox_widget = None
+    screenshot_text_actor = None
+
     def take_screenshot() -> None:
-        path = str(rrd_file.with_suffix(".png"))
-        plotter.screenshot(path)
+        import matplotlib.pyplot as plt
+        # Hide UI overlays
+        for w in slider_widgets:
+            w.Off()
+        if checkbox_widget is not None:
+            checkbox_widget.Off()
+        if screenshot_text_actor is not None:
+            screenshot_text_actor.SetVisibility(False)
+        plotter.render()
+
+        img = plotter.screenshot(None)  # returns RGB numpy array
+
+        # Restore UI overlays
+        for w in slider_widgets:
+            w.On()
+        if checkbox_widget is not None:
+            checkbox_widget.On()
+        if screenshot_text_actor is not None:
+            screenshot_text_actor.SetVisibility(True)
+        plotter.render()
+
+        path = str(rrd_file.with_name(rrd_file.stem + "-map.pdf"))
+        h, w_px = img.shape[:2]
+        fig, ax = plt.subplots(figsize=(w_px / 100, h / 100), dpi=100)
+        ax.imshow(img)
+        ax.axis("off")
+        fig.savefig(path, format="pdf", bbox_inches="tight", pad_inches=0)
+        plt.close(fig)
         print(f"Screenshot saved to {path}")
 
-    plotter.add_slider_widget(
+    slider_widgets.append(plotter.add_slider_widget(
         callback=set_point_size,
-        rng=[0.5, 2.0],
+        rng=[1.0, 8.0],
         value=1.5,
         title="Point Size",
         pointa=(0.025, 0.10),
         pointb=(0.225, 0.10),
         style="modern",
-    )
-    plotter.add_slider_widget(
+    ))
+    slider_widgets.append(plotter.add_slider_widget(
         callback=set_line_width,
         rng=[1.0, 10.0],
         value=4.0,
@@ -321,8 +350,8 @@ def visualize_landmarks(rrd_file: Path) -> None:
         pointa=(0.025, 0.02),
         pointb=(0.225, 0.02),
         style="modern",
-    )
-    plotter.add_checkbox_button_widget(
+    ))
+    checkbox_widget = plotter.add_checkbox_button_widget(
         callback=lambda _: take_screenshot(),
         value=False,
         position=(10, 100),
@@ -331,7 +360,9 @@ def visualize_landmarks(rrd_file: Path) -> None:
         color_off="steelblue",
         background_color="white",
     )
-    plotter.add_text("Screenshot", position=(45, 105), font_size=9, color="black")
+    screenshot_text_actor = plotter.add_text(
+        "Screenshot", position=(45, 105), font_size=9, color="black"
+    )
 
     plotter.show()
 
