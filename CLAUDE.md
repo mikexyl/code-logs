@@ -6,12 +6,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repo is a **multi-robot pose graph optimization and evaluation toolkit**. It processes SLAM output from multiple robots (in g2o format), optimizes the combined pose graph with GTSAM, and evaluates trajectory accuracy with the `evo` tool against ground truth.
 
+## Environment Setup
+
+Python dependencies are managed via [pixi](https://pixi.sh). Activate the environment before running any Python scripts:
+
+```bash
+pixi shell        # activate the pixi environment
+# or prefix individual commands:
+pixi run python3 evaluate.py <experiment_folder>
+```
+
+The `pixi.toml` pins Python 3.11, numpy, matplotlib, scipy, rerun-sdk, evo, open3d, datafusion, and pyvista.
+
 ## Building the C++ Optimizer
 
 ```bash
-# From repo root
+# Using pixi (recommended, generates compile_commands.json)
+pixi run build
+
+# Or manually from repo root
 ./build.sh
-# or manually:
 mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
 ```
 
@@ -60,6 +74,31 @@ python3 plot_g2o.py <file.g2o> --only-3d
 python3 plot_g2o.py <file.g2o> --three-planes
 python3 plot_g2o.py <file.g2o> --save output.png
 ```
+
+## Visualizing Rerun .rrd Recordings
+
+`plot_rrd.py` reads Rerun `.rrd` recording files produced by the multi-robot system:
+
+```bash
+# Print all entities/components in the recording
+python3 plot_rrd.py <file.rrd>
+
+# Visualize landmarks (Points3D) and trajectories (LineStrips3D) with PyVista
+python3 plot_rrd.py <file.rrd> --landmarks
+
+# Plot cumulative received bandwidth over time (stacked BOW / VLC / CBS)
+python3 plot_rrd.py <file.rrd> --bandwidth
+
+# Save bandwidth plot to a specific path (saves both PDF and PNG)
+python3 plot_rrd.py <file.rrd> --bandwidth --save output.pdf
+```
+
+The `--landmarks` viewer expects:
+- Landmark point clouds at entity paths ending in `/landmarks` (with optional `Points3D:colors`)
+- Trajectories at entity paths containing `/traj/` (as `LineStrips3D:strips`)
+- Transforms at parent entities to compose world-frame poses
+
+The `--bandwidth` mode discovers robots from `/<robot>/received_bow_byte` entities and also reads `/<robot>/received_vlc_byte` and `/agent_<robot>/bandwidth_recv_bytes`. Outputs IEEE single-column formatted PDF and PNG next to the `.rrd` file.
 
 ## Data Layout
 

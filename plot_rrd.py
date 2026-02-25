@@ -369,6 +369,264 @@ def visualize_landmarks(rrd_file: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Bandwidth visualizer
+# ---------------------------------------------------------------------------
+
+def plot_bandwidth(rrd_file: Path, output: Path | None = None) -> None:
+    """
+    Plot cumulative received bandwidth over time, stacked by module.
+
+    Discovers robots via entities of the form:
+        /<robot>/received_bow_byte   (BOW vectors)
+        /<robot>/received_vlc_byte   (VLC frames)
+        /agent_<robot>/bandwidth_recv_bytes  (CBS backend)
+
+    Sums all robots together and draws a stacked-area chart.
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    dataset, server = _open_dataset(rrd_file)  # noqa: F841  keep server alive
+
+    archive = rr.recording.load_archive(str(rrd_file))
+    recording = list(archive.all_recordings())[0]
+    schema = recording.schema()
+
+    # Discover robot names from /<robot>/received_bow_byte entities
+    robots = sorted({
+        col.entity_path.lstrip("/").split("/")[0]
+        for col in schema.component_columns()
+        if col.entity_path.endswith("/received_bow_byte")
+    })
+    print(f"Found robots: {robots}")
+
+    def get_series(entity_path: str) -> pd.Series:
+        """Return a pd.Series (datetime64[ns] index → float value)."""
+        view = dataset.filter_contents(entity_path)
+        table = view.reader(index="log_time").to_arrow_table()
+        col_key = f"{entity_path}:Scalars:scalars"
+        try:
+            df = table.select(["log_time", col_key]).to_pandas()
+        except KeyError:
+            return pd.Series(dtype=float)
+        df = df.dropna(subset=[col_key])
+        df["value"] = df[col_key].apply(lambda v: float(np.asarray(v).flat[0]))
+        return pd.Series(df["value"].values, index=pd.to_datetime(df["log_time"]))
+
+    # Collect per-robot series
+    bow_all, vlc_all, cbs_all = [], [], []
+    for robot in robots:
+        bow_all.append(get_series(f"/{robot}/received_bow_byte"))
+        vlc_all.append(get_series(f"/{robot}/received_vlc_byte"))
+        cbs_all.append(get_series(f"/agent_{robot}/bandwidth_recv_bytes"))
+
+    def sum_series(series_list: list[pd.Series], t_common: pd.DatetimeIndex) -> np.ndarray:
+        """Interpolate each series onto t_common and sum."""
+        total = np.zeros(len(t_common), dtype=np.float64)
+        t_ns = t_common.view("int64").astype(np.float64)
+        for s in series_list:
+            if s.empty:
+                continue
+            s_ns = s.index.view("int64").astype(np.float64)
+            interp = np.interp(t_ns, s_ns, s.values.astype(np.float64),
+                               left=0.0, right=float(s.iloc[-1]))
+            total += interp
+        return total
+
+    # Common time axis spanning the full experiment
+    all_series = bow_all + vlc_all + cbs_all
+    non_empty = [s for s in all_series if not s.empty]
+    if not non_empty:
+        print("No bandwidth data found.")
+        return
+
+    t_min = min(s.index.min() for s in non_empty)
+    t_max = max(s.index.max() for s in non_empty)
+    t_common = pd.date_range(t_min, t_max, periods=800)
+
+    bow_total = sum_series(bow_all, t_common) / 1e6   # → MB
+    vlc_total = sum_series(vlc_all, t_common) / 1e6
+    cbs_total = sum_series(cbs_all, t_common) / 1e6
+
+    # x-axis: seconds from experiment start
+    t_sec = (t_common - t_min).total_seconds().values
+
+    # IEEE Transactions single-column formatting (3.5 in wide, 4:3 aspect ratio)
+    plt.rcParams.update({
+        'text.usetex': False,
+        'font.family': 'serif',
+        'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+        'font.size': 8,
+        'axes.labelsize': 8,
+        'axes.titlesize': 8,
+        'legend.fontsize': 7,
+        'xtick.labelsize': 7,
+        'ytick.labelsize': 7,
+        'figure.figsize': (3.5, 3.5 * 3 / 4),   # single column, 4:3
+        'figure.dpi': 300,
+        'savefig.dpi': 300,
+        'axes.linewidth': 0.5,
+        'lines.linewidth': 1.0,
+        'patch.linewidth': 0.5,
+        'pdf.fonttype': 42,
+        'ps.fonttype': 42,
+    })
+
+    fig, ax = plt.subplots()
+    ax.stackplot(
+        t_sec,
+        bow_total, vlc_total, cbs_total,
+        labels=["BOW", "VLC", "CBS"],
+        colors=["#4C72B0", "#DD8452", "#55A868"],
+        alpha=0.80,
+    )
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Cumulative Received (MB)")
+    ax.legend(loc="upper left")
+    ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
+    plt.tight_layout()
+
+    # Derive base path: experiment folder (parent of rrd file), stem = "<rrd_stem>_bandwidth"
+    base = rrd_file.parent / (rrd_file.stem + "_bandwidth")
+    if output is not None:
+        # If the caller explicitly passed a path, honour it but still save both formats
+        base = output.with_suffix("")
+
+    pdf_path = base.with_suffix(".pdf")
+    png_path = base.with_suffix(".png")
+    fig.savefig(pdf_path, bbox_inches="tight")
+    fig.savefig(png_path, bbox_inches="tight", dpi=300)
+    print(f"Saved to {pdf_path}")
+    print(f"Saved to {png_path}")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Loop counter visualizer
+# ---------------------------------------------------------------------------
+
+def plot_loops(rrd_file: Path, output: Path | None = None) -> None:
+    """
+    Plot the number of place-recognition loops and geometrically-verified loops
+    over time, summed across all robots.
+
+    Discovers robots via entities of the form:
+        /<robot>/num_pr_loops   (place recognition detections)
+        /<robot>/num_gv_loops   (geometric verification detections)
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    dataset, server = _open_dataset(rrd_file)  # noqa: F841  keep server alive
+
+    archive = rr.recording.load_archive(str(rrd_file))
+    recording = list(archive.all_recordings())[0]
+    schema = recording.schema()
+
+    # Discover robot names from /<robot>/num_pr_loops entities
+    robots = sorted({
+        col.entity_path.lstrip("/").split("/")[0]
+        for col in schema.component_columns()
+        if col.entity_path.endswith("/num_pr_loops")
+    })
+    if not robots:
+        robots = sorted({
+            col.entity_path.lstrip("/").split("/")[0]
+            for col in schema.component_columns()
+            if col.entity_path.endswith("/num_gv_loops")
+        })
+    print(f"Found robots: {robots}")
+
+    def get_series(entity_path: str) -> pd.Series:
+        """Return a pd.Series (datetime64[ns] index → float value)."""
+        view = dataset.filter_contents(entity_path)
+        table = view.reader(index="log_time").to_arrow_table()
+        col_key = f"{entity_path}:Scalars:scalars"
+        try:
+            df = table.select(["log_time", col_key]).to_pandas()
+        except KeyError:
+            return pd.Series(dtype=float)
+        df = df.dropna(subset=[col_key])
+        df["value"] = df[col_key].apply(lambda v: float(np.asarray(v).flat[0]))
+        return pd.Series(df["value"].values, index=pd.to_datetime(df["log_time"]))
+
+    pr_all, gv_all = [], []
+    for robot in robots:
+        pr_all.append(get_series(f"/{robot}/num_pr_loops"))
+        gv_all.append(get_series(f"/{robot}/num_gv_loops"))
+
+    all_series = pr_all + gv_all
+    non_empty = [s for s in all_series if not s.empty]
+    if not non_empty:
+        print("No loop data found.")
+        return
+
+    t_min = min(s.index.min() for s in non_empty)
+    t_max = max(s.index.max() for s in non_empty)
+    t_common = pd.date_range(t_min, t_max, periods=800)
+
+    def sum_series(series_list: list[pd.Series], t_common: pd.DatetimeIndex) -> np.ndarray:
+        """Interpolate each series onto t_common and sum."""
+        total = np.zeros(len(t_common), dtype=np.float64)
+        t_ns = t_common.view("int64").astype(np.float64)
+        for s in series_list:
+            if s.empty:
+                continue
+            s_ns = s.index.view("int64").astype(np.float64)
+            interp = np.interp(t_ns, s_ns, s.values.astype(np.float64),
+                               left=0.0, right=float(s.iloc[-1]))
+            total += interp
+        return total
+
+    pr_total = sum_series(pr_all, t_common)
+    gv_total = sum_series(gv_all, t_common)
+
+    t_sec = (t_common - t_min).total_seconds().values
+
+    # IEEE Transactions single-column formatting (3.5 in wide, 4:3 aspect ratio)
+    plt.rcParams.update({
+        'text.usetex': False,
+        'font.family': 'serif',
+        'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+        'font.size': 8,
+        'axes.labelsize': 8,
+        'axes.titlesize': 8,
+        'legend.fontsize': 7,
+        'xtick.labelsize': 7,
+        'ytick.labelsize': 7,
+        'figure.figsize': (3.5, 3.5 * 3 / 4),   # single column, 4:3
+        'figure.dpi': 300,
+        'savefig.dpi': 300,
+        'axes.linewidth': 0.5,
+        'lines.linewidth': 1.0,
+        'patch.linewidth': 0.5,
+        'pdf.fonttype': 42,
+        'ps.fonttype': 42,
+    })
+
+    fig, ax = plt.subplots()
+    ax.plot(t_sec, pr_total, label="PR Loops",  color="#4C72B0")
+    ax.plot(t_sec, gv_total, label="GV Loops",  color="#DD8452")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Number of Loops Detected")
+    ax.legend(loc="upper left")
+    ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
+    plt.tight_layout()
+
+    base = rrd_file.parent / (rrd_file.stem + "_loops")
+    if output is not None:
+        base = output.with_suffix("")
+
+    pdf_path = base.with_suffix(".pdf")
+    png_path = base.with_suffix(".png")
+    fig.savefig(pdf_path, bbox_inches="tight")
+    fig.savefig(png_path, bbox_inches="tight", dpi=300)
+    print(f"Saved to {pdf_path}")
+    print(f"Saved to {png_path}")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -381,6 +639,18 @@ def main() -> None:
         "--landmarks", action="store_true",
         help="Visualize /map/*/landmarks and /map/traj/* with PyVista"
     )
+    parser.add_argument(
+        "--bandwidth", action="store_true",
+        help="Plot cumulative bandwidth usage (BOW / VLC / CBS) over time"
+    )
+    parser.add_argument(
+        "--loops", action="store_true",
+        help="Plot PR and GV loop counts over time (summed across all robots)"
+    )
+    parser.add_argument(
+        "--save", type=Path, default=None, metavar="FILE",
+        help="Save plot to FILE instead of opening an interactive window"
+    )
     args = parser.parse_args()
 
     rrd_file: Path = args.rrd_file.resolve()
@@ -390,6 +660,10 @@ def main() -> None:
 
     if args.landmarks:
         visualize_landmarks(rrd_file)
+    elif args.bandwidth:
+        plot_bandwidth(rrd_file, output=args.save)
+    elif args.loops:
+        plot_loops(rrd_file, output=args.save)
     else:
         print_schema(rrd_file)
 
