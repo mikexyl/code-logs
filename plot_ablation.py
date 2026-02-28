@@ -98,6 +98,28 @@ def _load_bandwidth(path: Path) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _mark_endpoint(ax, t_arr: np.ndarray, v_arr: np.ndarray,
+                   color: str, fmt: str = "{:.0f}") -> None:
+    """Dot + value label at the last point of a curve."""
+    ax.plot(t_arr[-1], v_arr[-1], "o", color=color, markersize=3, zorder=5,
+            clip_on=False)
+    ax.annotate(fmt.format(v_arr[-1]),
+                xy=(t_arr[-1], v_arr[-1]),
+                xytext=(-4, 3), textcoords="offset points",
+                fontsize=6, color=color, ha="right", va="bottom")
+
+
+def _save_fig(fig, folder: Path, stem: str) -> None:
+    for suffix in (".pdf", ".png"):
+        out = folder / f"{stem}{suffix}"
+        fig.savefig(out, bbox_inches="tight", dpi=300)
+        print(f"Saved to {out}")
+
+
+# ---------------------------------------------------------------------------
 # Per-type comparison plots
 # ---------------------------------------------------------------------------
 
@@ -119,9 +141,11 @@ def plot_bandwidth_comparison(paths: list[Path], folder: Path) -> None:
     for i, (p, d) in enumerate(datasets):
         t_sec = d["t_sec"]
         mask  = t_sec <= t_end
+        t_m, v_m = t_sec[mask], d["total"][mask]
         label = _short_label(p.stem, "bandwidth")
         color = COLORS[i % len(COLORS)]
-        ax.plot(t_sec[mask], d["total"][mask], color=color, label=label)
+        ax.plot(t_m, v_m, color=color, label=label)
+        _mark_endpoint(ax, t_m, v_m, color, fmt="{:.1f}")
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Cumulative Bandwidth (MB)")
@@ -133,10 +157,13 @@ def plot_bandwidth_comparison(paths: list[Path], folder: Path) -> None:
                 style="italic")
     plt.tight_layout()
 
-    for suffix in (".pdf", ".png"):
-        out = folder / f"bandwidth_comparison{suffix}"
-        fig.savefig(out, bbox_inches="tight", dpi=300)
-        print(f"Saved to {out}")
+    _save_fig(fig, folder, "bandwidth_comparison")
+
+    # Log-scale version
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
+    _save_fig(fig, folder, "bandwidth_comparison_log")
+
     plt.close(fig)
 
 
@@ -173,9 +200,13 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
         with np.errstate(invalid="ignore", divide="ignore"):
             ratio = np.where(pr > 0, gv / pr, 0.0)
 
-        ax_counts.plot(t_sec[mask], pr, color=color, linestyle="-",  label=f"{label} PR")
-        ax_counts.plot(t_sec[mask], gv, color=color, linestyle="--", label=f"{label} GV")
-        ax_ratio.plot(t_sec[mask], ratio, color=color, label=label)
+        t_m = t_sec[mask]
+        ax_counts.plot(t_m, pr,    color=color, linestyle="-",  label=f"{label} PR")
+        ax_counts.plot(t_m, gv,    color=color, linestyle="--", label=f"{label} GV")
+        ax_ratio.plot( t_m, ratio, color=color, label=label)
+        _mark_endpoint(ax_counts, t_m, pr,    color, fmt="{:.0f}")
+        _mark_endpoint(ax_counts, t_m, gv,    color, fmt="{:.0f}")
+        _mark_endpoint(ax_ratio,  t_m, ratio, color, fmt="{:.2f}")
 
     ax_counts.set_ylabel("Count")
     ax_counts.legend(loc="upper left")
@@ -188,10 +219,13 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
 
     plt.tight_layout()
 
-    for suffix in (".pdf", ".png"):
-        out = folder / f"loops_comparison{suffix}"
-        fig.savefig(out, bbox_inches="tight", dpi=300)
-        print(f"Saved to {out}")
+    _save_fig(fig, folder, "loops_comparison")
+
+    # Log-scale version: counts panel only (ratio is already 0–1)
+    ax_counts.set_yscale("log")
+    ax_counts.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
+    _save_fig(fig, folder, "loops_comparison_log")
+
     plt.close(fig)
 
 
