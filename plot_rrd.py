@@ -262,6 +262,30 @@ def visualize_landmarks(rrd_file: Path) -> None:
             print(f"  {entity}: {len(pts)} points  "
                   f"bbox=[{pts.min(axis=0).round(2)}, {pts.max(axis=0).round(2)}]")
 
+    # --- Save landmark point clouds to .pcd files ---
+    try:
+        import open3d as o3d
+        for entity, (pts, rgb) in zip(landmark_entities, clouds):
+            entity_tag = entity.strip("/").replace("/", "_")
+            pcd_path = rrd_file.with_name(f"{rrd_file.stem}_{entity_tag}.pcd")
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(pts.astype(np.float64))
+            pcd.colors = o3d.utility.Vector3dVector(rgb.astype(np.float64))
+            o3d.io.write_point_cloud(str(pcd_path), pcd)
+            print(f"Saved landmarks to {pcd_path}")
+    except ImportError:
+        print("open3d not available — skipping .pcd export.")
+
+    # --- Save trajectories to .npy files ---
+    for entity, (strips, _) in zip(traj_entities, trajs):
+        entity_tag = entity.strip("/").replace("/", "_")
+        npy_path = rrd_file.with_name(f"{rrd_file.stem}_{entity_tag}.npy")
+        strips_arr = np.empty(len(strips), dtype=object)
+        for i, s in enumerate(strips):
+            strips_arr[i] = s
+        np.save(str(npy_path), strips_arr, allow_pickle=True)
+        print(f"Saved trajectory to {npy_path}")
+
     print("\nLaunching PyVista viewer  (Q to quit) ...")
     plotter = pv.Plotter(window_size=(1280, 960))
     plotter.set_background([1.0, 1.0, 1.0])
@@ -503,6 +527,15 @@ def plot_bandwidth(rrd_file: Path, output: Path | None = None) -> None:
     print(f"Saved to {png_path}")
     plt.close(fig)
 
+    npy_path = base.with_suffix(".npy")
+    np.save(str(npy_path), {
+        "t_sec": t_sec,
+        "bow_MB": bow_total,
+        "vlc_MB": vlc_total,
+        "cbs_MB": cbs_total,
+    }, allow_pickle=True)
+    print(f"Saved to {npy_path}")
+
 
 # ---------------------------------------------------------------------------
 # Loop counter visualizer
@@ -627,6 +660,14 @@ def plot_loops(rrd_file: Path, output: Path | None = None) -> None:
     print(f"Saved to {pdf_path}")
     print(f"Saved to {png_path}")
     plt.close(fig)
+
+    npy_path = base.with_suffix(".npy")
+    np.save(str(npy_path), {
+        "t_sec": t_sec,
+        "pr_total": pr_total,
+        "gv_total": gv_total,
+    }, allow_pickle=True)
+    print(f"Saved to {npy_path}")
 
 
 # ---------------------------------------------------------------------------
