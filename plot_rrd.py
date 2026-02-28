@@ -265,6 +265,7 @@ def visualize_landmarks(rrd_file: Path) -> None:
     print("\nLaunching PyVista viewer  (Q to quit) ...")
     plotter = pv.Plotter(window_size=(1280, 960))
     plotter.set_background([1.0, 1.0, 1.0])
+    plotter.render_window.PointSmoothingOn()  # enables anti-aliased fractional point sizes
 
     actors = []
     for pts, rgb in clouds:
@@ -274,7 +275,7 @@ def visualize_landmarks(rrd_file: Path) -> None:
             cloud,
             scalars="rgb",
             rgb=True,
-            point_size=1.5,
+            point_size=1.2,
             render_points_as_spheres=False,
         )
         actors.append(actor)
@@ -336,7 +337,7 @@ def visualize_landmarks(rrd_file: Path) -> None:
     slider_widgets.append(plotter.add_slider_widget(
         callback=set_point_size,
         rng=[1.0, 8.0],
-        value=1.5,
+        value=1.2,
         title="Point Size",
         pointa=(0.025, 0.10),
         pointb=(0.225, 0.10),
@@ -379,7 +380,7 @@ def plot_bandwidth(rrd_file: Path, output: Path | None = None) -> None:
     Discovers robots via entities of the form:
         /<robot>/received_bow_byte   (BOW vectors)
         /<robot>/received_vlc_byte   (VLC frames)
-        /agent_<robot>/bandwidth_recv_bytes  (CBS backend)
+        /<robot>/bandwidth_recv_bytes  (CBS backend)
 
     Sums all robots together and draws a stacked-area chart.
     """
@@ -418,7 +419,7 @@ def plot_bandwidth(rrd_file: Path, output: Path | None = None) -> None:
     for robot in robots:
         bow_all.append(get_series(f"/{robot}/received_bow_byte"))
         vlc_all.append(get_series(f"/{robot}/received_vlc_byte"))
-        cbs_all.append(get_series(f"/agent_{robot}/bandwidth_recv_bytes"))
+        cbs_all.append(get_series(f"/{robot}/bandwidth_recv_bytes"))
 
     def sum_series(series_list: list[pd.Series], t_common: pd.DatetimeIndex) -> np.ndarray:
         """Interpolate each series onto t_common and sum."""
@@ -462,7 +463,7 @@ def plot_bandwidth(rrd_file: Path, output: Path | None = None) -> None:
         'legend.fontsize': 7,
         'xtick.labelsize': 7,
         'ytick.labelsize': 7,
-        'figure.figsize': (3.5, 3.5 * 3 / 4),   # single column, 4:3
+        'figure.figsize': (3.5, 3.5 * 2 / 4),   # single column, 4:3
         'figure.dpi': 300,
         'savefig.dpi': 300,
         'axes.linewidth': 0.5,
@@ -476,14 +477,16 @@ def plot_bandwidth(rrd_file: Path, output: Path | None = None) -> None:
     ax.stackplot(
         t_sec,
         bow_total, vlc_total, cbs_total,
-        labels=["BOW", "VLC", "CBS"],
+        labels=["Global Desc.", "Sequences", "Beliefs"],
         colors=["#4C72B0", "#DD8452", "#55A868"],
         alpha=0.80,
     )
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Cumulative Received (MB)")
+    ax.set_ylabel("Communication (MB)")
     ax.legend(loc="upper left")
     ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
+    ax.set_yscale("linear")
+    ax.set_xlim(t_sec[0], t_sec[-1])
     plt.tight_layout()
 
     # Derive base path: experiment folder (parent of rrd file), stem = "<rrd_stem>_bandwidth"

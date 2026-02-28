@@ -10,7 +10,7 @@ python = "3.11.*"
 numpy = "*"
 matplotlib = "*"
 scipy = "*"
-rerun-sdk = "*"
+rerun-sdk = "0.30.*"
 libstdcxx-ng = ">=14"
 
 [pypi-dependencies]

@@ -181,7 +181,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/qt6-main-6.10.2-hb82b983_4.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/re2-2025.11.05-h5301d42_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/readline-8.3-h853b02a_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/linux-64/rerun-sdk-0.29.2-py311h5dd3b18_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/rerun-sdk-0.30.0-py311h5dd3b18_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/s2n-1.7.0-ha63dd3a_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/scipy-1.17.0-py311hbe70eeb_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
@@ -3396,9 +3396,9 @@ packages:
   - pysocks>=1.5.6,!=1.5.7 ; extra == 'socks'
   - chardet>=3.0.2,<6 ; extra == 'use-chardet-on-py3'
   requires_python: '>=3.9'
-- conda: https://conda.anaconda.org/conda-forge/linux-64/rerun-sdk-0.29.2-py311h5dd3b18_0.conda
-  sha256: fb71911d6cfc95fe89f5ba5085c223830308555e15d1369caab4f167ce24df83
-  md5: 0a40fef248ac2dfa8005bea273aeaa4a
+- conda: https://conda.anaconda.org/conda-forge/linux-64/rerun-sdk-0.30.0-py311h5dd3b18_0.conda
+  sha256: 4fe7aef0003846167239e414173fc438482961ba460f6f75699f83aba04adc1c
+  md5: dabae5834a6233aaf44555b47fdb9bff
   depends:
   - __glibc >=2.17,<3.0.a0
   - anywidget
@@ -3419,8 +3419,8 @@ packages:
   - pkg:pypi/rerun-notebook?source=hash-mapping
   - pkg:pypi/rerun-pixi-env?source=hash-mapping
   - pkg:pypi/rerun-sdk?source=hash-mapping
-  size: 94854214
-  timestamp: 1770980187795
+  size: 96439205
+  timestamp: 1772093383812
 - pypi: https://files.pythonhosted.org/packages/67/f3/6cd296376653270ac1b423bb30bd70942d9916b6978c6f40472d6ac038e7/retrying-1.4.2-py3-none-any.whl
   name: retrying
   version: 1.4.2
