@@ -63,14 +63,13 @@ def load_lcd_log(csv_path: Path) -> pd.DataFrame:
         csv_path,
         header=None,
         skiprows=1,
-        usecols=[0, 1, 4],
-        names=["stamp_ns", "bow_matches", "num_loop_closures"],
+        usecols=[0, 1, 4, 5, 6],
+        names=["stamp_ns", "bow_matches", "num_loop_closures", "bow_bytes", "vlc_bytes"],
         skipinitialspace=True,
         on_bad_lines='skip',
     )
-    df["stamp_ns"] = pd.to_numeric(df["stamp_ns"], errors="coerce")
-    df["bow_matches"] = pd.to_numeric(df["bow_matches"], errors="coerce")
-    df["num_loop_closures"] = pd.to_numeric(df["num_loop_closures"], errors="coerce")
+    for col in ["stamp_ns", "bow_matches", "num_loop_closures", "bow_bytes", "vlc_bytes"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=["stamp_ns", "bow_matches", "num_loop_closures"])
     df = df.sort_values("stamp_ns").reset_index(drop=True)
     return df
@@ -114,8 +113,10 @@ def plot_kimera_multi(experiment_dir: Path, output: Path | None = None) -> None:
     t_common_ns = np.linspace(t_min_ns, t_max_ns, 800)
     t_sec = (t_common_ns - t_min_ns) / 1e9
 
-    bow_total = sum_series(dfs, "bow_matches", t_common_ns)
+    bow_total   = sum_series(dfs, "bow_matches",       t_common_ns)
     loops_total = sum_series(dfs, "num_loop_closures", t_common_ns)
+    bow_MB      = sum_series(dfs, "bow_bytes",         t_common_ns) / 1e6
+    vlc_MB      = sum_series(dfs, "vlc_bytes",         t_common_ns) / 1e6
 
     # --- Plot ---
     plt.rcParams.update(IEEE_RC)
@@ -150,6 +151,17 @@ def plot_kimera_multi(experiment_dir: Path, output: Path | None = None) -> None:
         "num_loop_closures": loops_total,
     }, allow_pickle=True)
     print(f"Saved to {npy_path}")
+
+    # --- Save bandwidth data (bow + vlc; no CBS/backend for now) ---
+    bw_base = experiment_dir / base_name.replace("_loops", "_bandwidth")
+    bw_npy = bw_base.with_suffix(".npy")
+    np.save(str(bw_npy), {
+        "t_sec": t_sec,
+        "bow_MB": bow_MB,
+        "vlc_MB": vlc_MB,
+        "cbs_MB": np.zeros_like(bow_MB),
+    }, allow_pickle=True)
+    print(f"Saved to {bw_npy}")
 
 
 # ---------------------------------------------------------------------------

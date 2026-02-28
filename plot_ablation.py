@@ -52,14 +52,49 @@ def _short_label(stem: str, type_name: str) -> str:
 
 
 def group_npy_files(folder: Path) -> dict[str, list[Path]]:
-    """Return {type_name: [path, ...]} for all known-type .npy files in folder."""
+    """
+    Return {type_name: [path, ...]} for all known-type .npy files.
+    Scans both the main folder and baselines/<folder.name>/ if it exists.
+    """
     groups: dict[str, list[Path]] = defaultdict(list)
-    for p in sorted(folder.glob("*.npy")):
-        for t in KNOWN_TYPES:
-            if p.stem.endswith(f"_{t}"):
-                groups[t].append(p)
-                break
+
+    search_dirs = [folder]
+    baseline_dir = folder.parent / "baselines" / folder.name
+    if baseline_dir.exists():
+        search_dirs.append(baseline_dir)
+
+    for search_dir in search_dirs:
+        for p in sorted(search_dir.glob("*.npy")):
+            for t in KNOWN_TYPES:
+                if p.stem.endswith(f"_{t}"):
+                    groups[t].append(p)
+                    break
     return groups
+
+
+def _load_loops(path: Path) -> dict | None:
+    """
+    Load a loops .npy file and normalise to {t_sec, pr, gv}.
+
+    Supports two schemas:
+      - main system:  pr_total / gv_total
+      - Kimera-Multi: bow_matches / num_loop_closures
+    """
+    d = np.load(path, allow_pickle=True).item()
+    if "pr_total" in d and "gv_total" in d:
+        return {"t_sec": d["t_sec"], "pr": d["pr_total"], "gv": d["gv_total"]}
+    if "bow_matches" in d and "num_loop_closures" in d:
+        return {"t_sec": d["t_sec"], "pr": d["bow_matches"], "gv": d["num_loop_closures"]}
+    return None
+
+
+def _load_bandwidth(path: Path) -> dict | None:
+    """Load a bandwidth .npy file and normalise to {t_sec, total}.
+    CBS (backend) bandwidth is excluded so all methods are comparable."""
+    d = np.load(path, allow_pickle=True).item()
+    if "bow_MB" in d and "vlc_MB" in d:
+        return {"t_sec": d["t_sec"], "total": d["bow_MB"] + d["vlc_MB"]}
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -68,27 +103,34 @@ def group_npy_files(folder: Path) -> dict[str, list[Path]]:
 
 def plot_bandwidth_comparison(paths: list[Path], folder: Path) -> None:
     """
-    Overlay total cumulative bandwidth (bow + vlc + cbs) for each variant.
+    Overlay cumulative BoW + VLC bandwidth for each variant (CBS excluded).
     All variants are truncated to the shortest experiment duration.
     """
-    datasets = [(np.load(p, allow_pickle=True).item(), p) for p in paths]
-    t_end = min(d["t_sec"][-1] for d, _ in datasets)
+    datasets = [(p, _load_bandwidth(p)) for p in paths]
+    datasets = [(p, d) for p, d in datasets if d is not None]
+    if not datasets:
+        print("  No parseable bandwidth data — skipping.")
+        return
+    t_end = min(d["t_sec"][-1] for _, d in datasets)
 
     plt.rcParams.update(IEEE_RC)
     fig, ax = plt.subplots()
 
-    for i, (d, p) in enumerate(datasets):
+    for i, (p, d) in enumerate(datasets):
         t_sec = d["t_sec"]
         mask  = t_sec <= t_end
-        total = d["bow_MB"] + d["vlc_MB"] + d["cbs_MB"]
         label = _short_label(p.stem, "bandwidth")
         color = COLORS[i % len(COLORS)]
-        ax.plot(t_sec[mask], total[mask], color=color, label=label)
+        ax.plot(t_sec[mask], d["total"][mask], color=color, label=label)
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Cumulative Bandwidth (MB)")
     ax.legend(loc="upper left")
     ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
+    ax.annotate("* CBS backend bandwidth not included",
+                xy=(0.99, 0.02), xycoords="axes fraction",
+                ha="right", va="bottom", fontsize=6, color="gray",
+                style="italic")
     plt.tight_layout()
 
     for suffix in (".pdf", ".png"):
@@ -104,9 +146,15 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
       top:    PR (solid) and GV (dashed) counts per variant
       bottom: GV/PR ratio per variant (0 where PR == 0)
     All variants are truncated to the shortest experiment duration.
+    Supports both main-system (pr_total/gv_total) and baseline
+    (bow_matches/num_loop_closures) schemas.
     """
-    datasets = [(np.load(p, allow_pickle=True).item(), p) for p in paths]
-    t_end = min(d["t_sec"][-1] for d, _ in datasets)
+    datasets = [(p, _load_loops(p)) for p in paths]
+    datasets = [(p, d) for p, d in datasets if d is not None]
+    if not datasets:
+        print("  No parseable loops data — skipping.")
+        return
+    t_end = min(d["t_sec"][-1] for _, d in datasets)
 
     plt.rcParams.update(IEEE_RC)
     fig, (ax_counts, ax_ratio) = plt.subplots(
@@ -114,14 +162,14 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
     )
     fig.subplots_adjust(hspace=0.08)
 
-    for i, (d, p) in enumerate(datasets):
+    for i, (p, d) in enumerate(datasets):
         t_sec = d["t_sec"]
         mask  = t_sec <= t_end
         label = _short_label(p.stem, "loops")
         color = COLORS[i % len(COLORS)]
 
-        pr = d["pr_total"][mask]
-        gv = d["gv_total"][mask]
+        pr = d["pr"][mask]
+        gv = d["gv"][mask]
         with np.errstate(invalid="ignore", divide="ignore"):
             ratio = np.where(pr > 0, gv / pr, 0.0)
 
