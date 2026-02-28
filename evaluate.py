@@ -16,24 +16,39 @@ from scipy.spatial.transform import Rotation
 
 def read_tum_trajectory(filepath):
     """
-    Read a TUM format trajectory file.
+    Read a TUM format trajectory file (space- or comma-delimited).
+    CSV files (.csv) are parsed with comma as delimiter; all others use whitespace.
     Returns timestamps, positions (Nx3), and quaternions (Nx4, xyzw format).
     """
     timestamps = []
     positions = []
     quaternions = []
-    
+
+    is_csv = os.path.splitext(filepath)[1].lower() == '.csv'
+
     with open(filepath, 'r') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
-            parts = line.split()
+            parts = line.split(',') if is_csv else line.split()
             if len(parts) >= 8:
-                timestamps.append(float(parts[0]))
-                positions.append([float(parts[1]), float(parts[2]), float(parts[3])])
-                quaternions.append([float(parts[4]), float(parts[5]), float(parts[6]), float(parts[7])])
-    
+                try:
+                    if is_csv:
+                        # CSV format: timestamp_ns, x, y, z, qw, qx, qy, qz
+                        timestamps.append(float(parts[0]) / 1e9)
+                        positions.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                        # Reorder wxyz -> xyzw (TUM convention)
+                        quaternions.append([float(parts[5]), float(parts[6]), float(parts[7]), float(parts[4])])
+                    else:
+                        # TUM format: timestamp_s, x, y, z, qx, qy, qz, qw
+                        timestamps.append(float(parts[0]))
+                        positions.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                        quaternions.append([float(parts[4]), float(parts[5]), float(parts[6]), float(parts[7])])
+                except ValueError:
+                    # Skip header rows that cannot be parsed as floats
+                    continue
+
     return np.array(timestamps), np.array(positions), np.array(quaternions)
 
 
@@ -257,20 +272,46 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
     plt.close()
 
 
-def find_trajectory_pairs(experiment_folder):
+def find_trajectory_pairs(experiment_folder, gt_folder=None):
     """
     Recursively finds 'Robot *.tum' files and their corresponding 'gt.txt'.
-    Returns a list of tuples: (robot_file_path, gt_file_path, first_timestamp)
+
+    If gt_folder is provided, ground truth files are looked up under:
+        gt_folder/<experiment_name>/<relative_subpath>/gt.txt
+    where <experiment_name> is the basename of experiment_folder and
+    <relative_subpath> is the path of the containing directory relative to
+    experiment_folder.  Otherwise gt.txt is expected in the same directory as
+    the robot file (legacy behaviour).
+
+    Returns a list of dicts with keys: robot_path, gt_path, timestamp.
     """
     pairs = []
-    
+    experiment_name = os.path.basename(experiment_folder)
+
     # Walk through the directory structure
     for root, dirs, files in os.walk(experiment_folder):
         for file in files:
             if file.startswith("Robot ") and file.endswith(".tum"):
                 robot_path = os.path.join(root, file)
-                gt_path = os.path.join(root, "gt.txt")
-                
+
+                if gt_folder is not None:
+                    # The GT filename is <first_subdir>.txt (or .csv) under gt_folder/<experiment_name>/
+                    # e.g. experiment_folder/a5/dpgo/Robot 0.tum -> gt_folder/a5678/a5.txt
+                    rel_subpath = os.path.relpath(root, experiment_folder)
+                    first_subdir = rel_subpath.split(os.sep)[0] if rel_subpath != '.' else ''
+                    stem = first_subdir if first_subdir else "gt"
+                    gt_path = os.path.join(gt_folder, experiment_name, stem + ".txt")
+                    if not os.path.exists(gt_path):
+                        csv_candidate = os.path.join(gt_folder, experiment_name, stem + ".csv")
+                        if os.path.exists(csv_candidate):
+                            gt_path = csv_candidate
+                else:
+                    gt_path = os.path.join(root, "gt.txt")
+                    if not os.path.exists(gt_path):
+                        csv_candidate = os.path.join(root, "gt.csv")
+                        if os.path.exists(csv_candidate):
+                            gt_path = csv_candidate
+
                 if os.path.exists(gt_path):
                     # Read the first timestamp from the robot file for sorting
                     try:
@@ -289,8 +330,8 @@ def find_trajectory_pairs(experiment_folder):
                     except Exception as e:
                         print(f"Error reading {robot_path}: {e}")
                 else:
-                    print(f"Warning: No gt.txt found for {robot_path}")
-                    
+                    print(f"Warning: No gt.txt/.csv found for {robot_path} (looked in {gt_path})")
+
     # Sort pairs by timestamp
     pairs.sort(key=lambda x: x['timestamp'])
     return pairs
@@ -298,6 +339,16 @@ def find_trajectory_pairs(experiment_folder):
 def main():
     parser = argparse.ArgumentParser(description="Combine TUM trajectories and run evo ATE evaluation.")
     parser.add_argument("experiment_folder", help="Path to the experiment folder")
+    parser.add_argument(
+        "--gt_folder",
+        default="ground_truth",
+        help=(
+            "Root folder containing ground truth data. Ground truth files are "
+            "expected under <gt_folder>/<experiment_name>/[subpath]/gt.txt, where "
+            "<experiment_name> matches the basename of experiment_folder. "
+            "If omitted, gt.txt is looked up in the same directory as each robot file."
+        ),
+    )
     parser.add_argument(
         "--tf_file",
         default=None,
@@ -317,8 +368,13 @@ def main():
         print(f"Error: Folder {experiment_folder} does not exist.")
         sys.exit(1)
         
+    gt_folder = os.path.abspath(args.gt_folder) if args.gt_folder else None
+    if gt_folder:
+        print(f"Ground truth root: {gt_folder}")
+        print(f"  -> using subfolder: {os.path.join(gt_folder, os.path.basename(experiment_folder))}")
+
     print(f"Searching for trajectories in {experiment_folder}...")
-    pairs = find_trajectory_pairs(experiment_folder)
+    pairs = find_trajectory_pairs(experiment_folder, gt_folder=gt_folder)
     
     if not pairs:
         print("No valid Robot *.tum and gt.txt pairs found.")
@@ -358,8 +414,27 @@ def main():
         
         with open(combined_gt_path, 'w') as outfile:
             for p in pairs:
-                with open(p['gt_path'], 'r') as infile:
-                    outfile.write(infile.read())
+                if os.path.splitext(p['gt_path'])[1].lower() == '.csv':
+                    # Convert CSV to TUM space-delimited format for evo.
+                    # CSV columns: timestamp_ns, x, y, z, qw, qx, qy, qz
+                    # TUM columns: timestamp_s,  x, y, z, qx, qy, qz, qw
+                    with open(p['gt_path'], 'r') as infile:
+                        for line in infile:
+                            line = line.strip()
+                            if not line or line.startswith('#'):
+                                continue
+                            parts = line.split(',')
+                            if len(parts) >= 8:
+                                try:
+                                    ts_s = float(parts[0]) / 1e9
+                                except ValueError:
+                                    continue  # skip non-numeric header rows
+                                x, y, z = parts[1], parts[2], parts[3]
+                                qw, qx, qy, qz = parts[4], parts[5], parts[6], parts[7]
+                                outfile.write(f'{ts_s:.9f} {x} {y} {z} {qx} {qy} {qz} {qw}\n')
+                else:
+                    with open(p['gt_path'], 'r') as infile:
+                        outfile.write(infile.read())
 
         print("Running evo ape...")
         
