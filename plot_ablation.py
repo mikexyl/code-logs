@@ -221,9 +221,11 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
 
     _save_fig(fig, folder, "loops_comparison")
 
-    # Log-scale version: counts panel only (ratio is already 0–1)
+    # Log-scale version: both panels
     ax_counts.set_yscale("log")
+    ax_ratio.set_yscale("log")
     ax_counts.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
+    ax_ratio.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
     _save_fig(fig, folder, "loops_comparison_log")
 
     plt.close(fig)
