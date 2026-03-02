@@ -2,16 +2,17 @@
 """
 Extract inter-robot ground-truth loop closures from GT trajectory files.
 
-For every pair of robots, any two poses whose translation distance is within
---dist (metres) and relative rotation is within an angle threshold (degrees)
-are recorded as a loop closure.  Only inter-robot pairs are considered.
+For every pair of robots, any two poses whose XY distance is within
+--dist-xy (metres), Z distance within --dist-z (metres), and relative
+rotation within an angle threshold (degrees) are recorded as a loop closure.
+Only inter-robot pairs are considered.
 
 By default the script runs for three angle thresholds (10°, 20°, 30°) and
 saves a separate CSV and plot for each, plus a combined stats file.
 
 Usage:
     python extract_gt_loops.py ground_truth/campus
-    python extract_gt_loops.py ground_truth/campus --dist 2.0
+    python extract_gt_loops.py ground_truth/campus --dist-xy 2.0 --dist-z 1.0
     python extract_gt_loops.py ground_truth/campus --angles 5 15 30
 
 Output per threshold (tag = "angle<N>"):
@@ -36,77 +37,10 @@ import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
-
-IEEE_RC = {
-    'text.usetex': False,
-    'font.family': 'serif',
-    'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-    'font.size': 8,
-    'axes.labelsize': 8,
-    'axes.titlesize': 8,
-    'legend.fontsize': 7,
-    'xtick.labelsize': 7,
-    'ytick.labelsize': 7,
-    'figure.figsize': (3.5, 3.5),
-    'figure.dpi': 300,
-    'savefig.dpi': 300,
-    'axes.linewidth': 0.5,
-    'lines.linewidth': 0.8,
-    'patch.linewidth': 0.5,
-    'pdf.fonttype': 42,
-    'ps.fonttype': 42,
-}
+from utils.io import load_gt_trajectory
+from utils.plot import IEEE_RC, save_fig
 
 ROBOT_COLORS = ["#A8C4E0", "#F4C08A", "#A3D4B0", "#E8A0A0", "#C4B8D8", "#C8B09A"]
-
-
-# ---------------------------------------------------------------------------
-# I/O helpers
-# ---------------------------------------------------------------------------
-
-def load_gt(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Load a ground-truth file.  Two formats are supported:
-
-    .csv  — comma-separated, timestamp in nanoseconds (int), qw qx qy qz
-    .txt  — space-separated TUM format, timestamp in seconds (float), qx qy qz qw
-
-    Returns:
-        timestamps : (N,)  int64 nanoseconds
-        positions  : (N,3) float64 xyz
-        rotations  : (N,4) float64 xyzw quaternion
-    """
-    is_tum = path.suffix == ".txt"
-    timestamps, positions, rotations = [], [], []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            parts = line.split() if is_tum else line.split(',')
-            if len(parts) < 8:
-                continue
-            try:
-                if is_tum:
-                    # TUM: ts(s) x y z qx qy qz qw
-                    ts = int(float(parts[0]) * 1_000_000_000)
-                    x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-                    qx, qy, qz, qw = (float(parts[4]), float(parts[5]),
-                                      float(parts[6]), float(parts[7]))
-                else:
-                    # CSV: ts(ns) x y z qw qx qy qz
-                    ts = int(float(parts[0]))
-                    x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-                    qw, qx, qy, qz = (float(parts[4]), float(parts[5]),
-                                      float(parts[6]), float(parts[7]))
-                timestamps.append(ts)
-                positions.append([x, y, z])
-                rotations.append([qx, qy, qz, qw])   # xyzw
-            except ValueError:
-                continue
-    return (np.array(timestamps, dtype=np.int64),
-            np.array(positions,  dtype=np.float64),
-            np.array(rotations,  dtype=np.float64))
 
 
 # ---------------------------------------------------------------------------
@@ -126,31 +60,68 @@ def downsample_1hz(
     return timestamps[first_in_bin], positions[first_in_bin], rotations[first_in_bin]
 
 
-def load_robots(gt_dir: Path) -> dict[str, tuple]:
+def trim_ground_poses(
+    timestamps: np.ndarray,
+    positions: np.ndarray,
+    rotations: np.ndarray,
+    min_z: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Remove leading and trailing poses below min_z (takeoff / landing segments).
+
+    Only the contiguous ground segment at the start and end of the trajectory
+    is removed — mid-flight dips are kept.
+    """
+    if len(timestamps) == 0 or min_z is None:
+        return timestamps, positions, rotations
+    airborne = positions[:, 2] >= min_z
+    if not airborne.any():
+        return timestamps[:0], positions[:0], rotations[:0]
+    first = int(np.argmax(airborne))
+    last  = int(len(airborne) - 1 - np.argmax(airborne[::-1]))
+    return timestamps[first:last + 1], positions[first:last + 1], rotations[first:last + 1]
+
+
+def load_robots(gt_dir: Path, min_z: float | None = None) -> dict[str, tuple]:
     """Load and downsample all robot GT files in gt_dir to 1 Hz.
 
     Supports .csv (comma-separated, ns timestamps) and .txt (TUM, s timestamps).
+    If min_z is given, leading/trailing poses below that altitude are trimmed.
     """
     robots: dict[str, tuple] = {}
-    files = sorted(gt_dir.glob("*.csv")) + sorted(gt_dir.glob("*.txt"))
+    files = [p for p in sorted(gt_dir.glob("*.csv")) + sorted(gt_dir.glob("*.txt"))
+             if not p.stem.startswith("gt_loops")]
     for p in sorted(files):
-        ts, pos, rot = load_gt(p)
+        ts, pos, rot = load_gt_trajectory(p)
         if len(ts) == 0:
             print(f"  Warning: no poses loaded from {p.name}")
             continue
         ts, pos, rot = downsample_1hz(ts, pos, rot)
+        if min_z is not None:
+            n_before = len(ts)
+            ts, pos, rot = trim_ground_poses(ts, pos, rot, min_z)
+            n_trimmed = n_before - len(ts)
+            trim_info = f", trimmed {n_trimmed} ground poses" if n_trimmed else ""
+        else:
+            trim_info = ""
+        if len(ts) == 0:
+            print(f"  Warning: {p.name} has no airborne poses above min_z={min_z} m")
+            continue
         robots[p.stem] = (ts, pos, rot)
-        print(f"  {p.stem}: {len(ts)} poses (1 Hz)")
+        print(f"  {p.stem}: {len(ts)} poses (1 Hz){trim_info}")
     return robots
 
 
 def find_loops(
     robots: dict[str, tuple],
-    dist_thresh: float,
+    dist_xy: float,
+    dist_z: float,
     angle_thresh_rad: float,
 ) -> list[dict]:
     """
     Find all inter-robot loop-closure pairs in pre-loaded robot data.
+
+    Candidates must satisfy:
+      XY distance ≤ dist_xy  AND  |Δz| ≤ dist_z  AND  angle ≤ angle_thresh_rad
 
     Returns a list of dicts with keys:
         robot_i, timestamp_i_ns, robot_j, timestamp_j_ns,
@@ -167,15 +138,21 @@ def find_loops(
         R_all_i = Rotation.from_quat(rot_i)  # (N_i,)
         R_all_j = Rotation.from_quat(rot_j)  # (N_j,)
 
-        # Spatial lookup: KD-tree gives candidates within translation threshold.
-        tree_j = cKDTree(pos_j)
-        candidate_lists = tree_j.query_ball_point(pos_i, r=dist_thresh)
+        # Spatial lookup: 2D KD-tree on XY, then Z filtered separately.
+        tree_j = cKDTree(pos_j[:, :2])
+        candidate_lists = tree_j.query_ball_point(pos_i[:, :2], r=dist_xy)
 
         n_loops_pair = 0
         for idx_i, candidates in enumerate(candidate_lists):
             if not candidates:
                 continue
             cands = np.asarray(candidates, dtype=np.intp)
+
+            # Filter by Z distance.
+            z_mask = np.abs(pos_j[cands, 2] - pos_i[idx_i, 2]) <= dist_z
+            cands = cands[z_mask]
+            if cands.size == 0:
+                continue
 
             # Vectorised rotation check: compute all relative rotations at once.
             R_rel_batch = R_all_i[idx_i].inv() * R_all_j[cands]
@@ -267,7 +244,7 @@ def visualize_loops(
     # Load full (non-downsampled) trajectories for display.
     full_traj: dict[str, np.ndarray] = {}
     for p in sorted(gt_dir.glob("*.csv")) + sorted(gt_dir.glob("*.txt")):
-        _, pos, _ = load_gt(p)
+        _, pos, _ = load_gt_trajectory(p)
         if len(pos):
             full_traj[p.stem] = pos
 
@@ -313,10 +290,7 @@ def visualize_loops(
     plt.tight_layout()
 
     stem = f"gt_loops_viz_{tag}" if tag else "gt_loops_viz"
-    for suffix in (".pdf", ".png"):
-        out = gt_dir / f"{stem}{suffix}"
-        fig.savefig(out, bbox_inches="tight", dpi=300)
-        print(f"  Saved {out}")
+    save_fig(fig, gt_dir / stem)
     plt.close(fig)
     print(f"  ({len(loop_lines)} loop closure lines plotted)")
 
@@ -337,10 +311,15 @@ def main() -> None:
     )
     parser.add_argument("gt_dir", type=Path,
                         help="Folder containing per-robot GT CSV files (e.g. ground_truth/campus)")
-    parser.add_argument("--dist",   type=float, default=1.0,
-                        help="Max translation distance in metres (default: 1.0)")
+    parser.add_argument("--dist-xy", type=float, default=1.0, dest="dist_xy",
+                        help="Max XY distance in metres (default: 1.0)")
+    parser.add_argument("--dist-z",  type=float, default=1.0, dest="dist_z",
+                        help="Max Z distance in metres (default: 1.0)")
     parser.add_argument("--angles", type=float, nargs="+", default=[10.0, 20.0, 30.0],
                         help="Rotation thresholds in degrees to sweep (default: 10 20 30)")
+    parser.add_argument("--min-z", type=float, default=None, dest="min_z",
+                        help="Trim leading/trailing poses below this Z altitude (m) "
+                             "to skip takeoff/landing segments (default: disabled)")
     parser.add_argument("--plot", action="store_true",
                         help="Visualize trajectories and loop closure lines for each threshold")
     parser.add_argument("--subsample", type=int, default=50,
@@ -353,9 +332,11 @@ def main() -> None:
         raise SystemExit(1)
 
     print(f"Experiment : {gt_dir.name}")
-    print(f"dist ≤ {args.dist} m  |  angle thresholds: {args.angles}°")
+    print(f"dist_xy ≤ {args.dist_xy} m  |  dist_z ≤ {args.dist_z} m  |  angle thresholds: {args.angles}°")
+    if args.min_z is not None:
+        print(f"min_z     : {args.min_z} m  (trimming takeoff/landing)")
     print(f"Loading GT files from {gt_dir} ...")
-    robots = load_robots(gt_dir)
+    robots = load_robots(gt_dir, min_z=args.min_z)
 
     if len(robots) < 2:
         print("Need at least two robots.")
@@ -367,7 +348,10 @@ def main() -> None:
 
     with open(stats_path, "w") as stats_f:
         stats_f.write(f"GT Loop Closure Statistics — {gt_dir.name}\n")
-        stats_f.write(f"dist threshold : {args.dist} m\n")
+        stats_f.write(f"dist_xy threshold : {args.dist_xy} m\n")
+        stats_f.write(f"dist_z  threshold : {args.dist_z} m\n")
+        if args.min_z is not None:
+            stats_f.write(f"min_z   threshold : {args.min_z} m (takeoff/landing trimmed)\n")
         stats_f.write("=" * 60 + "\n\n")
 
         for angle_deg in args.angles:
@@ -375,7 +359,7 @@ def main() -> None:
             angle_rad = np.deg2rad(angle_deg)
 
             print(f"\n--- angle ≤ {angle_deg}° ---")
-            loops = find_loops(robots, args.dist, angle_rad)
+            loops = find_loops(robots, args.dist_xy, args.dist_z, angle_rad)
 
             # Save CSV
             csv_path = gt_dir / f"gt_loops_{tag}.csv"

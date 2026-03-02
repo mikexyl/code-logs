@@ -17,6 +17,8 @@ from pathlib import Path
 import numpy as np
 import rerun as rr
 
+from utils.plot import IEEE_RC
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -476,26 +478,7 @@ def plot_bandwidth(rrd_file: Path, output: Path | None = None) -> None:
     # x-axis: seconds from experiment start
     t_sec = (t_common - t_min).total_seconds().values
 
-    # IEEE Transactions single-column formatting (3.5 in wide, 4:3 aspect ratio)
-    plt.rcParams.update({
-        'text.usetex': False,
-        'font.family': 'serif',
-        'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-        'font.size': 8,
-        'axes.labelsize': 8,
-        'axes.titlesize': 8,
-        'legend.fontsize': 7,
-        'xtick.labelsize': 7,
-        'ytick.labelsize': 7,
-        'figure.figsize': (3.5, 3.5 * 2 / 4),   # single column, 4:3
-        'figure.dpi': 300,
-        'savefig.dpi': 300,
-        'axes.linewidth': 0.5,
-        'lines.linewidth': 1.0,
-        'patch.linewidth': 0.5,
-        'pdf.fonttype': 42,
-        'ps.fonttype': 42,
-    })
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 3.5 * 2 / 4), 'lines.linewidth': 1.0})
 
     fig, ax = plt.subplots()
     ax.stackplot(
@@ -619,26 +602,7 @@ def plot_loops(rrd_file: Path, output: Path | None = None) -> None:
 
     t_sec = (t_common - t_min).total_seconds().values
 
-    # IEEE Transactions single-column formatting (3.5 in wide, 4:3 aspect ratio)
-    plt.rcParams.update({
-        'text.usetex': False,
-        'font.family': 'serif',
-        'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-        'font.size': 8,
-        'axes.labelsize': 8,
-        'axes.titlesize': 8,
-        'legend.fontsize': 7,
-        'xtick.labelsize': 7,
-        'ytick.labelsize': 7,
-        'figure.figsize': (3.5, 3.5 * 3 / 4),   # single column, 4:3
-        'figure.dpi': 300,
-        'savefig.dpi': 300,
-        'axes.linewidth': 0.5,
-        'lines.linewidth': 1.0,
-        'patch.linewidth': 0.5,
-        'pdf.fonttype': 42,
-        'ps.fonttype': 42,
-    })
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 3.5 * 3 / 4), 'lines.linewidth': 1.0})
 
     fig, ax = plt.subplots()
     ax.plot(t_sec, pr_total, label="PR Loops",  color="#4C72B0")

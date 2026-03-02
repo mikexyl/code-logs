@@ -21,124 +21,13 @@ Usage:
 """
 
 import argparse
-import csv
 from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-
-IEEE_RC = {
-    'text.usetex': False,
-    'font.family': 'serif',
-    'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-    'font.size': 8,
-    'axes.labelsize': 8,
-    'axes.titlesize': 8,
-    'legend.fontsize': 7,
-    'xtick.labelsize': 7,
-    'ytick.labelsize': 7,
-    'figure.figsize': (3.5, 3.5),
-    'figure.dpi': 300,
-    'savefig.dpi': 300,
-    'axes.linewidth': 0.5,
-    'lines.linewidth': 0.8,
-    'patch.linewidth': 0.5,
-    'pdf.fonttype': 42,
-    'ps.fonttype': 42,
-}
-
-ROBOT_COLORS = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3", "#937860"]
-
-# Max allowed gap (seconds) between a keyframe timestamp and the nearest TUM
-# pose.  Larger gaps indicate a missing or mismatched trajectory segment.
-MAX_TIMESTAMP_GAP_S = 2.5
-
-
-# ---------------------------------------------------------------------------
-# Loaders
-# ---------------------------------------------------------------------------
-
-def load_tum(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Load a TUM trajectory file.
-
-    Returns:
-        timestamps : (N,)  float64, seconds
-        positions  : (N,3) float64, XYZ metres
-    """
-    timestamps, positions = [], []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            parts = line.split()
-            if len(parts) >= 4:
-                try:
-                    timestamps.append(float(parts[0]))
-                    positions.append([float(parts[1]), float(parts[2]), float(parts[3])])
-                except ValueError:
-                    continue
-    return np.array(timestamps, dtype=np.float64), np.array(positions, dtype=np.float64)
-
-
-def load_keyframes(path: Path) -> dict[int, float]:
-    """Load kimera_distributed_keyframes.csv.
-
-    Returns:
-        {keyframe_id: timestamp_seconds}
-    """
-    kf_map: dict[int, float] = {}
-    with open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                kid = int(row['keyframe_id'])
-                ts_s = float(row['keyframe_stamp_ns']) / 1e9
-                kf_map[kid] = ts_s
-            except (ValueError, KeyError):
-                continue
-    return kf_map
-
-
-def load_loop_closures(path: Path) -> list[dict]:
-    """Load loop_closures.csv.
-
-    Returns list of dicts with keys: robot1, pose1, robot2, pose2.
-    """
-    loops: list[dict] = []
-    with open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                loops.append({
-                    'robot1': int(row['robot1']),
-                    'pose1':  int(row['pose1']),
-                    'robot2': int(row['robot2']),
-                    'pose2':  int(row['pose2']),
-                })
-            except (ValueError, KeyError):
-                continue
-    return loops
-
-
-# ---------------------------------------------------------------------------
-# Position lookup
-# ---------------------------------------------------------------------------
-
-def find_position(ts_s: float,
-                  timestamps: np.ndarray,
-                  positions: np.ndarray) -> np.ndarray | None:
-    """Return the XYZ position from a TUM trajectory nearest to ts_s.
-
-    Returns None if the nearest match is further than MAX_TIMESTAMP_GAP_S away.
-    """
-    if len(timestamps) == 0:
-        return None
-    idx = int(np.argmin(np.abs(timestamps - ts_s)))
-    if abs(timestamps[idx] - ts_s) > MAX_TIMESTAMP_GAP_S:
-        return None
-    return positions[idx]
+from utils.io import read_tum_trajectory, load_keyframes_csv, load_loop_closures_csv
+from utils.plot import IEEE_RC, ROBOT_COLORS, find_tum_position, save_fig
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +117,9 @@ def main() -> None:
     keyframe_maps: dict[int, dict[int, float]] = {}
 
     for rid, info in sorted(robots.items()):
-        ts, pos = load_tum(info['tum'])
+        ts, pos, _ = read_tum_trajectory(str(info['tum']))
         trajectories[rid] = (ts, pos)
-        keyframe_maps[rid] = load_keyframes(info['keyframes'])
+        keyframe_maps[rid] = load_keyframes_csv(str(info['keyframes']))
         print(f'  Robot {rid}: {len(ts)} TUM poses, '
               f'{len(keyframe_maps[rid])} keyframes')
 
@@ -238,7 +127,7 @@ def main() -> None:
     seen: set[frozenset] = set()
     all_loops: list[dict] = []
     for rid, info in sorted(robots.items()):
-        for lc in load_loop_closures(info['loops']):
+        for lc in load_loop_closures_csv(str(info['loops'])):
             key: frozenset = frozenset([
                 (lc['robot1'], lc['pose1']),
                 (lc['robot2'], lc['pose2']),
@@ -256,7 +145,6 @@ def main() -> None:
         r1, p1 = lc['robot1'], lc['pose1']
         r2, p2 = lc['robot2'], lc['pose2']
 
-        # Skip if we don't have trajectory data for either robot
         if r1 not in trajectories or r2 not in trajectories:
             n_missing += 1
             continue
@@ -267,8 +155,8 @@ def main() -> None:
             n_missing += 1
             continue
 
-        pos1 = find_position(ts1, *trajectories[r1])
-        pos2 = find_position(ts2, *trajectories[r2])
+        pos1 = find_tum_position(ts1, *trajectories[r1])
+        pos2 = find_tum_position(ts2, *trajectories[r2])
         if pos1 is None or pos2 is None:
             n_missing += 1
             continue
@@ -290,10 +178,9 @@ def main() -> None:
         ts, pos = trajectories[rid]
         if len(pos) == 0:
             continue
-        name = robots[rid]['name']
         color = colors[rid]
         ax.plot(pos[:, 0], pos[:, 1],
-                color=color, linewidth=0.8, label=name, zorder=3)
+                color=color, linewidth=0.8, label=robots[rid]['name'], zorder=3)
         ax.plot(pos[0, 0], pos[0, 1],
                 'o', color=color, markersize=3, zorder=4)
 
@@ -321,12 +208,9 @@ def main() -> None:
     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
 
-    save_path = (args.save if args.save is not None
-                 else exp_dir / 'loops_viz.pdf').resolve()
-    for suffix in ('.pdf', '.png'):
-        out = save_path.with_suffix(suffix)
-        fig.savefig(out, bbox_inches='tight', dpi=300)
-        print(f'Saved {out}')
+    base = (args.save if args.save is not None
+            else exp_dir / 'loops_viz.pdf').resolve()
+    save_fig(fig, base)
     plt.close(fig)
 
 

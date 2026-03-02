@@ -11,34 +11,16 @@ Usage:
 """
 
 import argparse
+import csv
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig, mark_endpoint
 
-IEEE_RC = {
-    'text.usetex': False,
-    'font.family': 'serif',
-    'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-    'font.size': 8,
-    'axes.labelsize': 8,
-    'axes.titlesize': 8,
-    'legend.fontsize': 7,
-    'xtick.labelsize': 7,
-    'ytick.labelsize': 7,
-    'figure.figsize': (3.5, 3.5 * 3 / 4),
-    'figure.dpi': 300,
-    'savefig.dpi': 300,
-    'axes.linewidth': 0.5,
-    'lines.linewidth': 1.0,
-    'patch.linewidth': 0.5,
-    'pdf.fonttype': 42,
-    'ps.fonttype': 42,
-}
-
-COLORS = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3", "#937860"]
+COLORS = ROBOT_COLORS
 
 KNOWN_TYPES = ("bandwidth", "loops")
 
@@ -98,28 +80,6 @@ def _load_bandwidth(path: Path) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
-def _mark_endpoint(ax, t_arr: np.ndarray, v_arr: np.ndarray,
-                   color: str, fmt: str = "{:.0f}") -> None:
-    """Dot + value label at the last point of a curve."""
-    ax.plot(t_arr[-1], v_arr[-1], "o", color=color, markersize=3, zorder=5,
-            clip_on=False)
-    ax.annotate(fmt.format(v_arr[-1]),
-                xy=(t_arr[-1], v_arr[-1]),
-                xytext=(-4, 3), textcoords="offset points",
-                fontsize=6, color=color, ha="right", va="bottom")
-
-
-def _save_fig(fig, folder: Path, stem: str) -> None:
-    for suffix in (".pdf", ".png"):
-        out = folder / f"{stem}{suffix}"
-        fig.savefig(out, bbox_inches="tight", dpi=300)
-        print(f"Saved to {out}")
-
-
-# ---------------------------------------------------------------------------
 # Per-type comparison plots
 # ---------------------------------------------------------------------------
 
@@ -145,7 +105,7 @@ def plot_bandwidth_comparison(paths: list[Path], folder: Path) -> None:
         label = _short_label(p.stem, "bandwidth")
         color = COLORS[i % len(COLORS)]
         ax.plot(t_m, v_m, color=color, label=label)
-        _mark_endpoint(ax, t_m, v_m, color, fmt="{:.1f}")
+        mark_endpoint(ax, t_m, v_m, color, fmt="{:.1f}")
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Cumulative Bandwidth (MB)")
@@ -157,12 +117,12 @@ def plot_bandwidth_comparison(paths: list[Path], folder: Path) -> None:
                 style="italic")
     plt.tight_layout()
 
-    _save_fig(fig, folder, "bandwidth_comparison")
+    save_fig(fig, folder / "bandwidth_comparison")
 
     # Log-scale version
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
-    _save_fig(fig, folder, "bandwidth_comparison_log")
+    save_fig(fig, folder / "bandwidth_comparison_log")
 
     plt.close(fig)
 
@@ -204,9 +164,9 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
         ax_counts.plot(t_m, pr,    color=color, linestyle="-",  label=f"{label} PR")
         ax_counts.plot(t_m, gv,    color=color, linestyle="--", label=f"{label} GV")
         ax_ratio.plot( t_m, ratio, color=color, label=label)
-        _mark_endpoint(ax_counts, t_m, pr,    color, fmt="{:.0f}")
-        _mark_endpoint(ax_counts, t_m, gv,    color, fmt="{:.0f}")
-        _mark_endpoint(ax_ratio,  t_m, ratio, color, fmt="{:.2f}")
+        mark_endpoint(ax_counts, t_m, pr,    color, fmt="{:.0f}")
+        mark_endpoint(ax_counts, t_m, gv,    color, fmt="{:.0f}")
+        mark_endpoint(ax_ratio,  t_m, ratio, color, fmt="{:.2f}")
 
     ax_counts.set_ylabel("Count")
     ax_counts.legend(loc="upper left")
@@ -219,15 +179,98 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
 
     plt.tight_layout()
 
-    _save_fig(fig, folder, "loops_comparison")
+    save_fig(fig, folder / "loops_comparison")
 
     # Log-scale version: both panels
     ax_counts.set_yscale("log")
     ax_ratio.set_yscale("log")
     ax_counts.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
     ax_ratio.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
-    _save_fig(fig, folder, "loops_comparison_log")
+    save_fig(fig, folder / "loops_comparison_log")
 
+    plt.close(fig)
+
+
+def group_recall_files(folder: Path) -> list[Path]:
+    """Return all loops_recall.csv files for this experiment.
+
+    Looks in:
+      <folder>/loops_recall.csv            (main experiment)
+      baselines/<folder.name>/*/loops_recall.csv  (one per baseline method)
+    """
+    paths: list[Path] = []
+    main = folder / "loops_recall.csv"
+    if main.exists():
+        paths.append(main)
+    baseline_dir = folder.parent / "baselines" / folder.name
+    if baseline_dir.exists():
+        for method_dir in sorted(baseline_dir.iterdir()):
+            p = method_dir / "loops_recall.csv"
+            if p.exists():
+                paths.append(p)
+    return paths
+
+
+def _load_recall(path: Path) -> dict | None:
+    """Load a loops_recall.csv and return {buckets, recalls, label}.
+
+    Supports bucket format (bucket_min, bucket_max columns).
+    Overall recall per bucket is computed by summing n_detected and n_total
+    across all robot pairs.
+    """
+    agg: dict[tuple[int, int], list[int]] = defaultdict(lambda: [0, 0])
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            try:
+                bmin = int(row["bucket_min"])
+                bmax = int(row["bucket_max"])
+                agg[(bmin, bmax)][0] += int(row["n_detected"])
+                agg[(bmin, bmax)][1] += int(row["n_total"])
+            except (KeyError, ValueError):
+                continue
+    if not agg:
+        return None
+    bucket_keys = sorted(agg.keys())
+    recalls = [agg[b][0] / agg[b][1] if agg[b][1] > 0 else 0.0 for b in bucket_keys]
+    labels  = [f"{bmin}-{bmax}°" for bmin, bmax in bucket_keys]
+    return {"bucket_keys": bucket_keys, "labels": labels,
+            "recalls": recalls, "label": path.parent.name}
+
+
+def plot_recall_comparison(paths: list[Path], folder: Path) -> None:
+    """Grouped bar chart of per-bucket recall for each variant."""
+    datasets = [(p, _load_recall(p)) for p in paths]
+    datasets = [(p, d) for p, d in datasets if d is not None]
+    if not datasets:
+        print("  No parseable recall data — skipping.")
+        return
+
+    # All datasets must share the same bucket structure
+    bucket_labels = datasets[0][1]["labels"]
+    n_buckets  = len(bucket_labels)
+    n_variants = len(datasets)
+    width = 0.8 / n_variants
+
+    plt.rcParams.update({**IEEE_RC, "figure.figsize": (3.5, 2.8)})
+    fig, ax = plt.subplots()
+
+    for i, (p, d) in enumerate(datasets):
+        color  = COLORS[i % len(COLORS)]
+        label  = "CoDE-SLAM" if d["label"] == folder.name else d["label"]
+        offset = (i - (n_variants - 1) / 2) * width
+        xs = [j + offset for j in range(n_buckets)]
+        ax.bar(xs, d["recalls"], width=width * 0.9, color=color,
+               alpha=0.85, label=label)
+
+    ax.set_xticks(list(range(n_buckets)))
+    ax.set_xticklabels(bucket_labels, rotation=45, ha="right")
+    ax.set_xlabel("GT Rotation Bucket")
+    ax.set_ylabel("Recall")
+    ax.legend(loc="upper right")
+    ax.grid(True, axis="y", alpha=0.3, linestyle="--", linewidth=0.3)
+    plt.tight_layout()
+
+    save_fig(fig, folder / "recall_comparison")
     plt.close(fig)
 
 
@@ -267,6 +310,16 @@ def main() -> None:
             print("  (only one variant — skipping comparison plot)")
             continue
         PLOTTERS[type_name](paths, folder)
+
+    # Recall comparison (loops_recall.csv files)
+    recall_paths = group_recall_files(folder)
+    if len(recall_paths) >= 2:
+        print(f"\n[recall] {len(recall_paths)} variant(s):")
+        for p in recall_paths:
+            print(f"  {p}")
+        plot_recall_comparison(recall_paths, folder)
+    elif recall_paths:
+        print(f"\n[recall] only one variant found — skipping comparison plot")
 
 
 if __name__ == "__main__":
