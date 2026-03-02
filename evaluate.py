@@ -97,11 +97,34 @@ def collect_loop_closure_lines(pairs, rotation, translation, scale):
     return lines
 
 
+def _save_trajectory_plot(fig, folder, stem):
+    """Save full-size (pdf+png) and half-column (pdf+png) versions of a trajectory figure."""
+    for suffix in ('.pdf', '.png'):
+        out = os.path.join(folder, f"{stem}{suffix}")
+        fig.savefig(out, bbox_inches='tight', pad_inches=0.02)
+        print(f"Saved to {out}")
+
+    orig_size = fig.get_size_inches()
+    fig.set_size_inches(1.67, 1.5)
+    fig.tight_layout(pad=0.3)
+    for suffix in ('.pdf', '.png'):
+        out = os.path.join(folder, f"{stem}_half{suffix}")
+        fig.savefig(out, bbox_inches='tight', pad_inches=0.01)
+        print(f"Saved to {out}")
+
+    fig.set_size_inches(*orig_size)
+    fig.tight_layout(pad=0.5)
+
+
 def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
     """
     Plot aligned robot trajectories with different colors and labels.
     Reads the alignment transformation from evo_ape's saved results.
     Formatted for IEEE single-column journal standard.
+
+    Saves two variants:
+      trajectories_aligned_no_loops.pdf/png  – trajectories + GT only
+      trajectories_aligned.pdf/png           – same + loop closure lines
 
     Args:
         tf_gt_robot: optional 4x4 numpy array transforming points from the
@@ -110,19 +133,17 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
                      plotting so both trajectories share a common frame.
     """
     evo_zip_path = os.path.join(experiment_folder, "evo_ape.zip")
-    
+
     if not os.path.exists(evo_zip_path):
         print(f"Error: {evo_zip_path} not found. Run evo_ape first.")
         return
-    
+
     # Load alignment transformation
     rotation, translation, scale = load_alignment_from_evo_zip(evo_zip_path)
     print(f"Alignment - Scale: {scale:.6f}")
     print(f"Translation: {translation}")
-    
+
     # IEEE single-column formatting with Times New Roman
-    # Single column width: 3.5 inches (88.9mm)
-    # Use Type 1 fonts for IEEE compatibility
     plt.rcParams.update({
         'text.usetex': True,
         'text.latex.preamble': r'\usepackage{times}',
@@ -134,46 +155,34 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
         'legend.fontsize': 7,
         'xtick.labelsize': 7,
         'ytick.labelsize': 7,
-        'figure.figsize': (3.5, 3.0),  # Single column width, reasonable height
+        'figure.figsize': (3.5, 3.0),
         'figure.dpi': 300,
         'savefig.dpi': 300,
         'axes.linewidth': 0.5,
         'lines.linewidth': 1.0,
         'patch.linewidth': 0.5,
-        'pdf.fonttype': 42,  # TrueType fonts for IEEE
+        'pdf.fonttype': 42,
         'ps.fonttype': 42,
     })
-    
-    # Set up the plot
+
     fig, ax = plt.subplots()
-    
+
     # Color map for different robots
     colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(pairs))))
-    
-    # Plot each robot's trajectory
+
+    # Plot each robot's estimated (aligned) trajectory
     for idx, p in enumerate(pairs):
         robot_path = p['robot_path']
-        gt_path = p['gt_path']
-        
-        # Extract robot name from filename
         robot_name = os.path.basename(robot_path).replace('.tum', '')
-        
-        # Read trajectories
         _, est_positions, _ = read_tum_trajectory(robot_path)
-        _, gt_positions, _ = read_tum_trajectory(gt_path)
-        
         if len(est_positions) == 0:
             print(f"Warning: Empty trajectory for {robot_name}")
             continue
-        
-        # Apply alignment to estimated trajectory
         aligned_positions = apply_alignment(est_positions, rotation, translation, scale)
-        
-        # Plot estimated (aligned) trajectory
-        ax.plot(aligned_positions[:, 0], aligned_positions[:, 1], 
-                color=colors[idx % len(colors)], linewidth=1.0, 
+        ax.plot(aligned_positions[:, 0], aligned_positions[:, 1],
+                color=colors[idx % len(colors)], linewidth=1.0,
                 label=f'{robot_name}')
-    
+
     # Plot ground truth (each robot separately to avoid jump lines)
     gt_plotted = False
     T_gt = tf_gt_robot if tf_gt_robot is not None else np.eye(4)
@@ -181,52 +190,36 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
         _, gt_positions, _ = read_tum_trajectory(p['gt_path'])
         if len(gt_positions) > 0:
             gt_positions = apply_frame_transform(gt_positions, T_gt)
-            # Only add label for the first GT trajectory
             label = 'Ground Truth' if not gt_plotted else None
-            ax.plot(gt_positions[:, 0], gt_positions[:, 1], color='gray', linewidth=0.5, alpha=0.5,
+            ax.plot(gt_positions[:, 0], gt_positions[:, 1],
+                    color='gray', linewidth=0.5, alpha=0.5,
                     linestyle='--', label=label)
             gt_plotted = True
-    
-    # Plot loop closures (if distributed CSV files are present)
-    loop_lines = collect_loop_closure_lines(pairs, rotation, translation, scale)
-    lc_label_added = False
-    for p1, p2 in loop_lines:
-        ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
-                color='#CC2222', linewidth=0.5, alpha=0.5, zorder=5,
-                label='Loop closure' if not lc_label_added else None)
-        lc_label_added = True
 
     ax.set_xlabel('X (m)')
     ax.set_ylabel('Y (m)')
     ax.legend(loc='best', framealpha=0.9, edgecolor='none')
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3, linewidth=0.3)
-    
-    # Tight layout for publication
     plt.tight_layout(pad=0.5)
-    
-    # Save the plot (single column: 3.5 inches)
-    output_path = os.path.join(experiment_folder, "trajectories_aligned.pdf")
-    plt.savefig(output_path, bbox_inches='tight', pad_inches=0.02)
-    print(f"\nTrajectory plot saved to: {output_path}")
-    
-    # Also save as PNG for quick preview
-    output_png = os.path.join(experiment_folder, "trajectories_aligned.png")
-    plt.savefig(output_png, bbox_inches='tight', pad_inches=0.02)
-    print(f"Trajectory plot saved to: {output_png}")
-    
-    # Save half-column sized copy (1.67 inches for IEEE half-column)
-    fig.set_size_inches(1.67, 1.5)
-    plt.tight_layout(pad=0.3)
-    
-    output_path_half = os.path.join(experiment_folder, "trajectories_aligned_half.pdf")
-    plt.savefig(output_path_half, bbox_inches='tight', pad_inches=0.01)
-    print(f"Half-column plot saved to: {output_path_half}")
-    
-    output_png_half = os.path.join(experiment_folder, "trajectories_aligned_half.png")
-    plt.savefig(output_png_half, bbox_inches='tight', pad_inches=0.01)
-    print(f"Half-column plot saved to: {output_png_half}")
-    
+
+    # --- Version 1: no loop closures ---
+    _save_trajectory_plot(fig, experiment_folder, "trajectories_aligned_no_loops")
+
+    # --- Version 2: with loop closure lines ---
+    loop_lines = collect_loop_closure_lines(pairs, rotation, translation, scale)
+    lc_label_added = False
+    for p1, p2 in loop_lines:
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                color='#CC2222', linewidth=1.5, alpha=0.8, zorder=10,
+                label='Loop closure' if not lc_label_added else None)
+        lc_label_added = True
+    if loop_lines:
+        ax.legend(loc='best', framealpha=0.9, edgecolor='none')
+        plt.tight_layout(pad=0.5)
+
+    _save_trajectory_plot(fig, experiment_folder, "trajectories_aligned")
+
     plt.close()
 
 
