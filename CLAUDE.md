@@ -73,6 +73,56 @@ The script:
 
 RPE is run with `--delta 5 --delta_unit m`.
 
+## Extracting Ground-Truth Loop Closures
+
+`extract_gt_loops.py` finds inter-robot loop closures from ground-truth trajectory files using spatial + rotation proximity thresholds:
+
+```bash
+python extract_gt_loops.py ground_truth/campus
+python extract_gt_loops.py ground_truth/campus --dist 2.0
+python extract_gt_loops.py ground_truth/campus --angles 5 15 30
+python extract_gt_loops.py ground_truth/campus --plot --subsample 30
+```
+
+Inputs: per-robot `.csv` (ns timestamps, `qw qx qy qz`) or `.txt` TUM files (s timestamps, `qx qy qz qw`) in the given GT directory.
+
+The script downsamples all trajectories to 1 Hz, then uses a KD-tree + vectorised rotation check to find all inter-robot pose pairs within `--dist` metres and each `--angles` rotation threshold. Runs for multiple angle thresholds in one pass.
+
+Output per threshold (tag = `angle<N>`):
+- `<gt_dir>/gt_loops_angle<N>.csv` — loop closure table with relative poses `(tx,ty,tz,qx,qy,qz,qw)` where the transform is T_{i←j}
+- `<gt_dir>/gt_loops_viz_angle<N>.pdf/.png` — XY trajectory map with subsampled loop-closure lines (requires `--plot`)
+
+Combined: `<gt_dir>/gt_loops_stats.txt` — per-pair counts and translation/rotation statistics for all thresholds.
+
+## Plotting Ablation Comparisons
+
+`plot_ablation.py` overlays multiple experiment variants (bandwidth or loop curves) from `.npy` files:
+
+```bash
+python plot_ablation.py <folder>
+python plot_ablation.py campus
+```
+
+Scans `<folder>` (and `baselines/<folder.name>/` if present) for `*_bandwidth.npy` and `*_loops.npy` files. Each distinct file stem becomes a labelled variant on a shared axis. Saves IEEE-formatted PDF and PNG.
+
+## Plotting Baseline Loop/ATE Statistics
+
+`plot_baseline.py` reads Kimera-Multi `lcd_log.csv` files to plot BoW matches and loop-closure counts over time, with optional ATE evaluation:
+
+```bash
+# Plot BoW matches + loop closures over time
+python plot_baseline.py baselines/campus
+
+# Also compute ATE (looks for GT in ground_truth/<exp>/<robot>.csv)
+python plot_baseline.py baselines/campus --ate
+
+# Override GT root folder
+python plot_baseline.py baselines/campus --ate --gt_folder /path/to/gt
+
+# Save plot to a specific path
+python plot_baseline.py baselines/campus --save output.pdf
+```
+
 ## Visualizing g2o Pose Graphs
 
 ```bash
