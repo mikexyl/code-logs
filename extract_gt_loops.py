@@ -60,21 +60,54 @@ def downsample_1hz(
     return timestamps[first_in_bin], positions[first_in_bin], rotations[first_in_bin]
 
 
-def load_robots(gt_dir: Path) -> dict[str, tuple]:
+def trim_ground_poses(
+    timestamps: np.ndarray,
+    positions: np.ndarray,
+    rotations: np.ndarray,
+    min_z: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Remove leading and trailing poses below min_z (takeoff / landing segments).
+
+    Only the contiguous ground segment at the start and end of the trajectory
+    is removed — mid-flight dips are kept.
+    """
+    if len(timestamps) == 0 or min_z is None:
+        return timestamps, positions, rotations
+    airborne = positions[:, 2] >= min_z
+    if not airborne.any():
+        return timestamps[:0], positions[:0], rotations[:0]
+    first = int(np.argmax(airborne))
+    last  = int(len(airborne) - 1 - np.argmax(airborne[::-1]))
+    return timestamps[first:last + 1], positions[first:last + 1], rotations[first:last + 1]
+
+
+def load_robots(gt_dir: Path, min_z: float | None = None) -> dict[str, tuple]:
     """Load and downsample all robot GT files in gt_dir to 1 Hz.
 
     Supports .csv (comma-separated, ns timestamps) and .txt (TUM, s timestamps).
+    If min_z is given, leading/trailing poses below that altitude are trimmed.
     """
     robots: dict[str, tuple] = {}
-    files = sorted(gt_dir.glob("*.csv")) + sorted(gt_dir.glob("*.txt"))
+    files = [p for p in sorted(gt_dir.glob("*.csv")) + sorted(gt_dir.glob("*.txt"))
+             if not p.stem.startswith("gt_loops")]
     for p in sorted(files):
         ts, pos, rot = load_gt_trajectory(p)
         if len(ts) == 0:
             print(f"  Warning: no poses loaded from {p.name}")
             continue
         ts, pos, rot = downsample_1hz(ts, pos, rot)
+        if min_z is not None:
+            n_before = len(ts)
+            ts, pos, rot = trim_ground_poses(ts, pos, rot, min_z)
+            n_trimmed = n_before - len(ts)
+            trim_info = f", trimmed {n_trimmed} ground poses" if n_trimmed else ""
+        else:
+            trim_info = ""
+        if len(ts) == 0:
+            print(f"  Warning: {p.name} has no airborne poses above min_z={min_z} m")
+            continue
         robots[p.stem] = (ts, pos, rot)
-        print(f"  {p.stem}: {len(ts)} poses (1 Hz)")
+        print(f"  {p.stem}: {len(ts)} poses (1 Hz){trim_info}")
     return robots
 
 
@@ -284,6 +317,9 @@ def main() -> None:
                         help="Max Z distance in metres (default: 1.0)")
     parser.add_argument("--angles", type=float, nargs="+", default=[10.0, 20.0, 30.0],
                         help="Rotation thresholds in degrees to sweep (default: 10 20 30)")
+    parser.add_argument("--min-z", type=float, default=None, dest="min_z",
+                        help="Trim leading/trailing poses below this Z altitude (m) "
+                             "to skip takeoff/landing segments (default: disabled)")
     parser.add_argument("--plot", action="store_true",
                         help="Visualize trajectories and loop closure lines for each threshold")
     parser.add_argument("--subsample", type=int, default=50,
@@ -297,8 +333,10 @@ def main() -> None:
 
     print(f"Experiment : {gt_dir.name}")
     print(f"dist_xy ≤ {args.dist_xy} m  |  dist_z ≤ {args.dist_z} m  |  angle thresholds: {args.angles}°")
+    if args.min_z is not None:
+        print(f"min_z     : {args.min_z} m  (trimming takeoff/landing)")
     print(f"Loading GT files from {gt_dir} ...")
-    robots = load_robots(gt_dir)
+    robots = load_robots(gt_dir, min_z=args.min_z)
 
     if len(robots) < 2:
         print("Need at least two robots.")
@@ -312,6 +350,8 @@ def main() -> None:
         stats_f.write(f"GT Loop Closure Statistics — {gt_dir.name}\n")
         stats_f.write(f"dist_xy threshold : {args.dist_xy} m\n")
         stats_f.write(f"dist_z  threshold : {args.dist_z} m\n")
+        if args.min_z is not None:
+            stats_f.write(f"min_z   threshold : {args.min_z} m (takeoff/landing trimmed)\n")
         stats_f.write("=" * 60 + "\n\n")
 
         for angle_deg in args.angles:
