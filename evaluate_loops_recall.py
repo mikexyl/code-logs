@@ -272,58 +272,31 @@ def main() -> None:
     print(f'CSV   → {csv_path}')
 
     # -----------------------------------------------------------------------
-    # Box plot: per-pair recall distribution across angle thresholds
+    # Bar chart: overall recall per angle threshold
     # -----------------------------------------------------------------------
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
     fig, ax = plt.subplots()
 
-    box_data = []
+    overall_recalls = []
     for angle in angles:
-        vals = [
-            nd / nt if nt > 0 else float('nan')
-            for nd, nt in recall_data[angle].values()
-        ]
-        box_data.append([v for v in vals if not np.isnan(v)])
-
-    positions = list(range(len(angles)))
-    bp = ax.boxplot(
-        box_data, positions=positions, patch_artist=True,
-        widths=0.5,
-        medianprops={'color': 'black', 'linewidth': 1.2},
-        whiskerprops={'linewidth': 0.8},
-        capprops={'linewidth': 0.8},
-        flierprops={'marker': 'x', 'markersize': 4, 'markeredgewidth': 0.8},
-    )
-    for patch, color in zip(bp['boxes'], ROBOT_COLORS):
-        patch.set_facecolor(color)
-        patch.set_alpha(0.65)
-
-    # Overlay individual pair recall dots with jitter
-    rng = np.random.default_rng(0)
-    for xi, angle in zip(positions, angles):
-        vals = [
-            nd / nt if nt > 0 else float('nan')
-            for nd, nt in recall_data[angle].values()
-        ]
-        vals = [v for v in vals if not np.isnan(v)]
-        jitter = rng.uniform(-0.12, 0.12, len(vals))
-        ax.scatter(np.full(len(vals), xi) + jitter, vals,
-                   color='#333333', s=10, zorder=5, alpha=0.8, linewidths=0)
-
-    # Annotate overall recall above each box
-    for xi, angle in zip(positions, angles):
         pair_counts = recall_data[angle]
         total_det = sum(v[0] for v in pair_counts.values())
         total_gt  = sum(v[1] for v in pair_counts.values())
-        overall   = total_det / total_gt if total_gt > 0 else float('nan')
-        ax.text(xi, 1.03, f'{overall:.2f}',
+        overall_recalls.append(total_det / total_gt if total_gt > 0 else 0.0)
+
+    xs = list(range(len(angles)))
+    bars = ax.bar(xs, overall_recalls, width=0.5,
+                  color=ROBOT_COLORS[:len(angles)], alpha=0.8)
+
+    for x, recall in zip(xs, overall_recalls):
+        ax.text(x, recall + 0.01, f'{recall:.3f}',
                 ha='center', va='bottom', fontsize=6, color='#333333')
 
-    ax.set_xticks(positions)
+    ax.set_xticks(xs)
     ax.set_xticklabels([f'{a}°' for a in angles])
     ax.set_xlabel('GT Rotation Threshold')
-    ax.set_ylabel('Recall (per robot pair)')
-    ax.set_ylim(-0.05, 1.12)
+    ax.set_ylabel('Recall')
+    ax.set_ylim(0, 1.0)
     ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
 
