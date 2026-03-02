@@ -111,7 +111,7 @@ def load_gt_loops(gt_dir: Path) -> dict[int, list[dict]]:
     Returns {angle_deg (int): [{'robot_i', 't_i_s', 'robot_j', 't_j_s'}, ...]}.
     """
     result: dict[int, list[dict]] = {}
-    for p in sorted(gt_dir.glob('gt_loops_angle*.csv')):
+    for p in sorted(gt_dir.glob('gt_loops_angle*.csv'), key=lambda p: int(re.search(r'angle(\d+)', p.stem).group(1))):
         m = re.search(r'angle(\d+)', p.stem)
         if not m:
             continue
@@ -272,7 +272,7 @@ def main() -> None:
     print(f'CSV   → {csv_path}')
 
     # -----------------------------------------------------------------------
-    # Bar chart: overall recall per angle threshold
+    # Curve: overall recall vs angle threshold
     # -----------------------------------------------------------------------
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
     fig, ax = plt.subplots()
@@ -284,20 +284,14 @@ def main() -> None:
         total_gt  = sum(v[1] for v in pair_counts.values())
         overall_recalls.append(total_det / total_gt if total_gt > 0 else 0.0)
 
-    xs = list(range(len(angles)))
-    bars = ax.bar(xs, overall_recalls, width=0.5,
-                  color=ROBOT_COLORS[:len(angles)], alpha=0.8)
+    ax.plot(angles, overall_recalls, marker='o', markersize=3,
+            color='#4C72B0', linewidth=1.2)
 
-    for x, recall in zip(xs, overall_recalls):
-        ax.text(x, recall + 0.01, f'{recall:.3f}',
-                ha='center', va='bottom', fontsize=6, color='#333333')
-
-    ax.set_xticks(xs)
-    ax.set_xticklabels([f'{a}°' for a in angles])
-    ax.set_xlabel('GT Rotation Threshold')
+    ax.set_xlabel('GT Rotation Threshold (°)')
     ax.set_ylabel('Recall')
+    ax.set_xlim(angles[0], angles[-1])
     ax.set_ylim(0, 1.0)
-    ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
 
     save_fig(fig, exp_dir / 'loops_recall')
