@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import csv
 from collections import defaultdict
 from pathlib import Path
 
@@ -190,6 +191,77 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
     plt.close(fig)
 
 
+def group_recall_files(folder: Path) -> list[Path]:
+    """Return all loops_recall.csv files for this experiment.
+
+    Looks in:
+      <folder>/loops_recall.csv            (main experiment)
+      baselines/<folder.name>/*/loops_recall.csv  (one per baseline method)
+    """
+    paths: list[Path] = []
+    main = folder / "loops_recall.csv"
+    if main.exists():
+        paths.append(main)
+    baseline_dir = folder.parent / "baselines" / folder.name
+    if baseline_dir.exists():
+        for method_dir in sorted(baseline_dir.iterdir()):
+            p = method_dir / "loops_recall.csv"
+            if p.exists():
+                paths.append(p)
+    return paths
+
+
+def _load_recall(path: Path) -> dict | None:
+    """Load a loops_recall.csv and return {angles, recalls, label}.
+
+    Overall recall per angle is computed by summing n_detected and n_total
+    across all robot pairs.
+    """
+    agg: dict[int, list[int]] = defaultdict(lambda: [0, 0])  # angle → [det, tot]
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            try:
+                angle = int(row["angle"])
+                agg[angle][0] += int(row["n_detected"])
+                agg[angle][1] += int(row["n_total"])
+            except (KeyError, ValueError):
+                continue
+    if not agg:
+        return None
+    angles  = sorted(agg.keys())
+    recalls = [agg[a][0] / agg[a][1] if agg[a][1] > 0 else 0.0 for a in angles]
+    # label: immediate parent directory name
+    label = path.parent.name
+    return {"angles": angles, "recalls": recalls, "label": label}
+
+
+def plot_recall_comparison(paths: list[Path], folder: Path) -> None:
+    """Overlay recall-vs-angle curves for each variant."""
+    datasets = [(p, _load_recall(p)) for p in paths]
+    datasets = [(p, d) for p, d in datasets if d is not None]
+    if not datasets:
+        print("  No parseable recall data — skipping.")
+        return
+
+    plt.rcParams.update({**IEEE_RC, "figure.figsize": (3.5, 2.8)})
+    fig, ax = plt.subplots()
+
+    for i, (p, d) in enumerate(datasets):
+        color = COLORS[i % len(COLORS)]
+        ax.plot(d["angles"], d["recalls"], marker="o", markersize=3,
+                color=color, label=d["label"], linewidth=1.2)
+
+    ax.set_xlabel("GT Rotation Threshold (°)")
+    ax.set_ylabel("Recall")
+    ax.set_ylim(0, 1.0)
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
+    plt.tight_layout()
+
+    save_fig(fig, folder / "recall_comparison")
+    plt.close(fig)
+
+
 PLOTTERS = {
     "bandwidth": plot_bandwidth_comparison,
     "loops":     plot_loops_comparison,
@@ -226,6 +298,16 @@ def main() -> None:
             print("  (only one variant — skipping comparison plot)")
             continue
         PLOTTERS[type_name](paths, folder)
+
+    # Recall comparison (loops_recall.csv files)
+    recall_paths = group_recall_files(folder)
+    if len(recall_paths) >= 2:
+        print(f"\n[recall] {len(recall_paths)} variant(s):")
+        for p in recall_paths:
+            print(f"  {p}")
+        plot_recall_comparison(recall_paths, folder)
+    elif recall_paths:
+        print(f"\n[recall] only one variant found — skipping comparison plot")
 
 
 if __name__ == "__main__":
