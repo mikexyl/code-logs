@@ -11,3 +11,9 @@ g2345/
 gate/
 campus/
 campus.zip
+
+.cache
+.pixi
+.claude
+baselines
+build

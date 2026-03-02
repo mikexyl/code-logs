@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
+import yaml
 
 from utils.io import load_keyframes_csv, load_loop_closures_csv
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
@@ -38,8 +39,23 @@ from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
 # ---------------------------------------------------------------------------
 
 def discover_robots(exp_dir: Path) -> dict[int, str]:
-    """Return {robot_id: robot_dir_name} by scanning for dpgo/Robot N.tum."""
-    id_to_name: dict[int, str] = {}
+    """Return {robot_id: robot_dir_name}.
+
+    First checks for a robot_names.yaml in exp_dir with keys robotN_name.
+    Falls back to scanning for dpgo/Robot N.tum files.
+    """
+    yaml_path = exp_dir / 'robot_names.yaml'
+    if yaml_path.exists():
+        with open(yaml_path) as f:
+            data = yaml.safe_load(f)
+        id_to_name: dict[int, str] = {}
+        for key, name in data.items():
+            m = re.match(r'robot(\d+)_name', key)
+            if m:
+                id_to_name[int(m.group(1))] = name
+        return id_to_name
+
+    id_to_name = {}
     for robot_dir in sorted(exp_dir.iterdir()):
         if not robot_dir.is_dir():
             continue
@@ -81,6 +97,8 @@ def load_detected_loops(exp_dir: Path, id_to_name: dict[int, str]) -> list[dict]
         for lc in load_loop_closures_csv(str(lc_path)):
             r1, p1 = lc['robot1'], lc['pose1']
             r2, p2 = lc['robot2'], lc['pose2']
+            if r1 == r2:
+                continue  # skip intra-robot loops
             key: frozenset = frozenset([(r1, p1), (r2, p2)])
             if key in seen:
                 continue
@@ -199,6 +217,8 @@ def main() -> None:
                              '(e.g. ground_truth/a5678)')
     parser.add_argument('--tol', type=float, default=2.0,
                         help='Timestamp tolerance in seconds (default: 2.0)')
+    parser.add_argument('--max-angle', type=int, default=None, dest='max_angle',
+                        help='Only plot angle thresholds up to this value in degrees')
     args = parser.parse_args()
 
     exp_dir = args.experiment_dir.resolve()
@@ -226,6 +246,8 @@ def main() -> None:
         print('No gt_loops_angle*.csv files found.')
         raise SystemExit(1)
     angles = sorted(gt_by_angle.keys())
+    if args.max_angle is not None:
+        angles = [a for a in angles if a <= args.max_angle]
 
     # Recall per angle per pair
     recall_data: dict[int, dict[tuple[str, str], tuple[int, int]]] = {}

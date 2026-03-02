@@ -4,198 +4,144 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-This repo is a **multi-robot pose graph optimization and evaluation toolkit**. It processes SLAM output from multiple robots (in g2o format), optimizes the combined pose graph with GTSAM, and evaluates trajectory accuracy with the `evo` tool against ground truth.
+Multi-robot SLAM evaluation toolkit. Processes Kimera-Multi output (g2o pose graphs, TUM trajectories, Rerun recordings), runs GTSAM offline optimization, evaluates ATE/RPE with `evo`, extracts ground-truth loop closures, and generates IEEE-formatted publication plots.
 
-## Environment Setup
+## Environment
 
-Python dependencies are managed via [pixi](https://pixi.sh). Activate the environment before running any Python scripts:
-
-```bash
-pixi shell        # activate the pixi environment
-# or prefix individual commands:
-pixi run python3 evaluate.py <experiment_folder>
-```
-
-The `pixi.toml` pins Python 3.11, numpy, matplotlib, scipy, rerun-sdk, evo, open3d, datafusion, and pyvista.
-
-## Building the C++ Optimizer
+All Python scripts must be run with pixi:
 
 ```bash
-# Using pixi (recommended, generates compile_commands.json)
-pixi run build
-
-# Or manually from repo root
-mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
+pixi shell                          # activate once
+pixi run python3 <script.py> ...   # or prefix each command
 ```
 
-Dependencies: GTSAM, Boost (filesystem, system), C++17. The executable is `build/optimize_offline`.
+Python 3.11. Key packages: numpy, matplotlib, scipy, evo, rerun-sdk, open3d, pyvista.
 
-## Running the Optimizer
-
+Build the C++ optimizer:
 ```bash
-# Default dataset ("gate" folder)
-./build/optimize_offline
-
-# Specify dataset folder name
-./build/optimize_offline <dataset_name>
-
-# Specify dataset and output directory
-./build/optimize_offline <dataset_name> <output_dir>
+pixi run build    # recommended — also generates compile_commands.json
 ```
+The binary is `build/optimize_offline`. **Note:** it hardcodes the base path `/workspaces/src/code-logs/` — edit `src/optimize_offline.cpp` if running elsewhere.
 
-**Important:** The optimizer hardcodes its base search path to `/workspaces/src/code-logs/<dataset_name>`. Adjust the `base_path` variable in `src/optimize_offline.cpp` if running from a different environment.
+## Scripts
 
-The optimizer reads `bpsam_robot_*.g2o` from `<dataset>/<robot_dir>/dpgo/` subdirectories, combines all robot graphs, adds a single prior on the first pose of the first robot to fix gauge freedom, and writes results to `<dataset>/optimized_results/`.
-
-The optimizer uses **Levenberg-Marquardt** (GNC with gradient-norm criterion is implemented but commented out). Intra-robot odometry edges are classified as known inliers via `Symbol::chr()` comparison.
-
-## Running Trajectory Evaluation
-
-`evaluate.py` wraps `evo_ape` and `evo_rpe` for ATE/RPE evaluation of TUM-format trajectories:
-
+### evaluate.py — ATE/RPE evaluation
 ```bash
 python3 evaluate.py <experiment_folder>
-
-# With a separate ground truth folder (default: ground_truth/)
 python3 evaluate.py <experiment_folder> --gt_folder ground_truth
-
-# With a frame transform from GT to robot frame (e.g. different IMU origins)
 python3 evaluate.py <experiment_folder> --tf_file tf_xsens_to_handsfree.json
 ```
+Finds all `Robot *.tum` + matching GT files, concatenates per robot, runs `evo_ape tum` and `evo_rpe tum` (delta 5 m), saves `evo_ape.zip`, `evo_rpe.zip`, aligned trajectory plots (full + half-column). Generates two trajectory plot versions: `trajectories_aligned_no_loops.*` (clean) and `trajectories_aligned.*` (with loop closure lines overlaid).
 
-Ground truth lookup with `--gt_folder`: for a robot file at `<experiment>/<subdir>/dpgo/Robot N.tum`, the GT is read from `<gt_folder>/<experiment_name>/<subdir>.txt`.
-
-The script:
-1. Finds all `Robot *.tum` files and matching `gt.txt` (or external GT) files recursively
-2. Concatenates trajectories sorted by first timestamp and runs `evo_ape tum` and `evo_rpe tum`
-3. Saves `evo_ape.zip`, `evo_rpe.zip`, PDF/PNG plots to the experiment folder
-4. Generates IEEE single-column publication-ready trajectory plots (`trajectories_aligned.pdf`, `trajectories_aligned_half.pdf`)
-
-RPE is run with `--delta 5 --delta_unit m`.
-
-## Extracting Ground-Truth Loop Closures
-
-`extract_gt_loops.py` finds inter-robot loop closures from ground-truth trajectory files using spatial + rotation proximity thresholds:
-
+### extract_gt_loops.py — GT loop closure extraction
 ```bash
-python extract_gt_loops.py ground_truth/campus
-python extract_gt_loops.py ground_truth/campus --dist 2.0
-python extract_gt_loops.py ground_truth/campus --angles 5 15 30
-python extract_gt_loops.py ground_truth/campus --plot --subsample 30
+python3 extract_gt_loops.py ground_truth/campus --dist-xy 10.0 --dist-z 25.0 \
+    --min-z 15.0 --angles 10 20 30 40 50 60 --plot
 ```
+Downsamples GT trajectories to 1 Hz, uses a 2D KD-tree (XY) + Z filter + rotation magnitude check to find all inter-robot pose pairs. Sweeps multiple angle thresholds in one pass.
 
-Inputs: per-robot `.csv` (ns timestamps, `qw qx qy qz`) or `.txt` TUM files (s timestamps, `qx qy qz qw`) in the given GT directory.
+Key options:
+- `--dist-xy` / `--dist-z`: separate XY and Z proximity thresholds (metres)
+- `--min-z`: trim leading/trailing ground-level poses (use for UAV datasets to skip takeoff/landing; not needed for ground robots)
+- `--angles`: one or more rotation thresholds in degrees
+- `--plot --subsample N`: visualize 1-in-N loop lines on XY map
 
-The script downsamples all trajectories to 1 Hz, then uses a KD-tree + vectorised rotation check to find all inter-robot pose pairs within `--dist` metres and each `--angles` rotation threshold. Runs for multiple angle thresholds in one pass.
+Output per threshold: `gt_loops_angle<N>.csv`, `gt_loops_viz_angle<N>.pdf/png`. Combined stats: `gt_loops_stats.txt`. The `tx,ty,tz` in the CSV are the relative pose in robot_i's **local** frame (not world-frame XY distance).
 
-Output per threshold (tag = `angle<N>`):
-- `<gt_dir>/gt_loops_angle<N>.csv` — loop closure table with relative poses `(tx,ty,tz,qx,qy,qz,qw)` where the transform is T_{i←j}
-- `<gt_dir>/gt_loops_viz_angle<N>.pdf/.png` — XY trajectory map with subsampled loop-closure lines (requires `--plot`)
-
-Combined: `<gt_dir>/gt_loops_stats.txt` — per-pair counts and translation/rotation statistics for all thresholds.
-
-## Plotting Ablation Comparisons
-
-`plot_ablation.py` overlays multiple experiment variants (bandwidth or loop curves) from `.npy` files:
-
+### evaluate_loops_recall.py — loop closure recall vs GT
 ```bash
-python plot_ablation.py <folder>
-python plot_ablation.py campus
+python3 evaluate_loops_recall.py <experiment_dir> ground_truth/<exp> \
+    --tol 5.0 --max-angle 60
 ```
+Resolves detected loop closures (from `loop_closures.csv` + `kimera_distributed_keyframes.csv`) to wall-clock timestamps, then computes recall against each `gt_loops_angle*.csv`. A GT loop is "detected" if any detected loop covers the same robot pair with both timestamps within `--tol` seconds. Plots a recall-vs-angle-threshold curve.
 
-Scans `<folder>` (and `baselines/<folder.name>/` if present) for `*_bandwidth.npy` and `*_loops.npy` files. Each distinct file stem becomes a labelled variant on a shared axis. Saves IEEE-formatted PDF and PNG.
+Key options:
+- `--tol`: timestamp matching tolerance in seconds (default 2.0; 5.0 gives substantially higher recall)
+- `--max-angle`: cap x-axis of the curve without re-running extraction
 
-## Plotting Baseline Loop/ATE Statistics
-
-`plot_baseline.py` reads Kimera-Multi `lcd_log.csv` files to plot BoW matches and loop-closure counts over time, with optional ATE evaluation:
-
+### evaluate_loops.py — visualize detected loop closures
 ```bash
-# Plot BoW matches + loop closures over time
-python plot_baseline.py baselines/campus
-
-# Also compute ATE (looks for GT in ground_truth/<exp>/<robot>.csv)
-python plot_baseline.py baselines/campus --ate
-
-# Override GT root folder
-python plot_baseline.py baselines/campus --ate --gt_folder /path/to/gt
-
-# Save plot to a specific path
-python plot_baseline.py baselines/campus --save output.pdf
+python3 evaluate_loops.py <experiment_folder>
+python3 evaluate_loops.py a5678 --subsample 10
 ```
+Draws loop closure lines on top of all robot TUM trajectories. Lookup chain: `loop_closures.csv` → keyframe CSV → timestamp → TUM position.
 
-## Visualizing g2o Pose Graphs
-
+### plot_rrd.py — Rerun recording visualization
 ```bash
-python3 plot_g2o.py <path/to/file.g2o>
-
-# Options
-python3 plot_g2o.py <file.g2o> --only-2d
-python3 plot_g2o.py <file.g2o> --only-3d
-python3 plot_g2o.py <file.g2o> --three-planes
-python3 plot_g2o.py <file.g2o> --save output.png
-```
-
-## Visualizing Rerun .rrd Recordings
-
-`plot_rrd.py` reads Rerun `.rrd` recording files produced by the multi-robot system:
-
-```bash
-# Print all entities/components in the recording
-python3 plot_rrd.py <file.rrd>
-
-# Visualize landmarks (Points3D) and trajectories (LineStrips3D) with PyVista
-python3 plot_rrd.py <file.rrd> --landmarks
-
-# Plot cumulative received bandwidth over time (stacked BOW / VLC / CBS)
-python3 plot_rrd.py <file.rrd> --bandwidth
-
-# Plot PR and GV loop counts over time (summed across robots)
-python3 plot_rrd.py <file.rrd> --loops
-
-# Save bandwidth/loop plot to a specific path (saves both PDF and PNG)
+python3 plot_rrd.py <file.rrd>               # list entities
+python3 plot_rrd.py <file.rrd> --landmarks   # 3D map + trajectory viewer (PyVista)
+python3 plot_rrd.py <file.rrd> --bandwidth   # cumulative BOW/VLC/CBS bandwidth plot
+python3 plot_rrd.py <file.rrd> --loops       # PR+GV loop counts over time
 python3 plot_rrd.py <file.rrd> --bandwidth --save output.pdf
 ```
 
-The `--landmarks` viewer expects:
-- Landmark point clouds at entity paths ending in `/landmarks` (with optional `Points3D:colors`)
-- Trajectories at entity paths containing `/traj/` (as `LineStrips3D:strips`)
-- Transforms at parent entities to compose world-frame poses
-- Interactive PyVista window with point size / trajectory width sliders and a screenshot button (saves `<rrd_stem>-map.pdf`)
+### plot_ablation.py — compare experiment variants
+```bash
+python3 plot_ablation.py <folder>
+```
+Scans `<folder>` and `baselines/<folder.name>/` for `*_bandwidth.npy` and `*_loops.npy` files. Each file stem becomes a labelled series on a shared axis.
 
-The `--bandwidth` mode discovers robots from `/<robot>/received_bow_byte` entities and also reads `/<robot>/received_vlc_byte` and `/<robot>/bandwidth_recv_bytes`. Outputs IEEE single-column formatted PDF and PNG next to the `.rrd` file (or to `--save` path).
+### plot_baseline.py — Kimera-Multi baseline stats
+```bash
+python3 plot_baseline.py baselines/campus [--ate] [--gt_folder ground_truth]
+```
+Reads `lcd_log.csv` from each robot's `distributed/` dir, plots BoW matches and loop-closure counts over time. With `--ate`, runs `evo_ape` against GT.
 
-The `--loops` mode discovers robots from `/<robot>/num_pr_loops` and `/<robot>/num_gv_loops`, sums across all robots, and produces a line plot.
+### plot_g2o.py — pose graph visualization
+```bash
+python3 plot_g2o.py <file.g2o> [--only-2d] [--only-3d] [--three-planes]
+```
+
+## Shared Library: `utils/`
+
+All scripts import from this package — do not duplicate its functionality.
+
+- **`utils/io.py`**: `read_tum_trajectory`, `load_gt_trajectory`, `load_keyframes_csv`, `load_loop_closures_csv`, `load_alignment_from_evo_zip`, `load_frame_transform`
+- **`utils/plot.py`**: `IEEE_RC` (rcParams dict), `ROBOT_COLORS`, `save_fig`, `apply_alignment`, `apply_frame_transform`, `find_tum_position`, `mark_endpoint`
+
+To override figure size while keeping IEEE style:
+```python
+plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.5)})
+```
+`save_fig(fig, base_path)` always saves both `.pdf` and `.png`.
 
 ## Data Layout
 
-Experiment folders (e.g. `gate/`, `g123/`, `a12/`, `a34/`, `a567/`) follow this structure:
-
 ```
-<experiment>/
-├── <robot_dir>/          # e.g. g1/, g2/, a1/, a2/ — one per robot
-│   └── dpgo/
-│       ├── bpsam_robot_<N>.g2o   # GTSAM pose graph output
-│       ├── Robot <N>.tum         # Estimated trajectory (TUM format)
-│       ├── gt.txt                # Ground truth trajectory (TUM format)
-│       └── X.txt                 # DPGO intermediate results
-├── optimized_results/    # Written by optimize_offline
-│   ├── combined_optimized.g2o
-│   ├── robot_<N>_initial.txt
-│   ├── robot_<N>_optimized.txt
-│   └── summary.txt
-├── evo_ape.zip           # Written by evaluate.py
-├── evo_rpe.zip
-├── trajectories_aligned.png/pdf
-└── trajectories_aligned_half.png/pdf
+<experiment>/                        # e.g. campus/, a5678/
+├── <robot_dir>/                     # e.g. acl_jackal/, a5/, a6/
+│   ├── dpgo/
+│   │   ├── bpsam_robot_<N>.g2o
+│   │   └── Robot <N>.tum
+│   └── distributed/
+│       ├── kimera_distributed_keyframes.csv   # pose_index → timestamp_ns
+│       ├── loop_closures.csv                  # inter-robot loop pairs
+│       └── lcd_log.csv                        # BoW/VLC byte counts over time
+├── evo_ape.zip / evo_rpe.zip
+└── trajectories_aligned*.pdf/png
+
+ground_truth/
+└── <experiment>/
+    └── <robot_dir>.csv    # comma-sep, timestamp_ns, x y z qw qx qy qz
+    └── <robot_dir>.txt    # TUM format, timestamp_s, x y z qx qy qz qw
 ```
 
-A `ground_truth/` folder at the repo root holds GT files organized by `<experiment_name>/<robot_dir>.txt` for use with `--gt_folder`.
+Kimera-Multi baselines live under `baselines/<experiment>/Kimera-Multi/<robot>/`.
 
 ## Key Architecture Notes
 
-- **Key remapping** in the optimizer: `new_key = robot_id * 10000 + original_pose_id`. Each robot occupies a 10000-key block. In `plot_g2o.py`, robot grouping uses `vid // 10000000000000000` — this is for the DPGO g2o format where GTSAM `Symbol` keys encode robot ID in the high bits.
-- **g2o information matrix convention**: GTSAM stores 6D info as (rotation, translation), but the g2o `EDGE_SE3:QUAT` format stores as (translation, rotation). `writeG2oNoIndex()` in `src/optimize_offline.cpp` handles this swap.
-- **Alignment in evaluate.py**: The `evo_ape.zip` from `evo_ape --align` stores either `alignment_transformation_sim3.npy` or `alignment_transformation_se3.npy`. The `load_alignment_from_evo_zip()` function reads this to realign the estimated trajectories for plotting.
-- **Frame transform file** (`tf_xsens_to_handsfree.json`): JSON with `rotation` (3x3) and `translation` (3,) keys specifying SE3 from GT IMU frame to robot IMU frame. Applied to GT positions before plotting so both share a common frame.
-- **Publication formatting**: All plots use IEEE single-column style (3.5 in wide, 300 dpi, serif fonts, pdf/ps fonttype 42). `evaluate.py` also saves a half-column variant (1.67 in wide).
-- The `CATKIN_IGNORE` file prevents catkin from treating this as a ROS package despite being inside a ROS workspace.
+**Timestamp conventions** (critical — mixing these causes silent bugs):
+- GT CSV files: nanoseconds, quaternion order `qw qx qy qz`
+- TUM files (.tum / .txt): seconds, quaternion order `qx qy qz qw`
+- Keyframe CSVs: nanoseconds in `keyframe_stamp_ns` column
+- All `utils/io.py` loaders normalize to seconds and `xyzw` order internally
+
+**GTSAM key remapping** in optimizer: `new_key = robot_id * 10000 + original_pose_id`. In DPGO g2o files, `plot_g2o.py` groups by `vid // 10000000000000000` (GTSAM Symbol high-bit encoding).
+
+**g2o info matrix**: GTSAM stores 6D info as (rotation, translation); `EDGE_SE3:QUAT` format is (translation, rotation). The `writeG2oNoIndex()` function in `src/optimize_offline.cpp` swaps these.
+
+**Bandwidth `.npy` files**: saved as `allow_pickle=True` dicts with keys `t_sec`, `bow_MB`, `vlc_MB`, `cbs_MB`. Loop `.npy` files have `t_sec`, `bow_matches`, `num_loop_closures`.
+
+**GT loop closure parameters used on real datasets**:
+- UAV (a5678): `--dist-xy 10 --dist-z 25 --min-z 15 --angles 10..60 --tol 5`
+- Ground (campus): `--dist-xy 10 --dist-z 25` (no `--min-z`), same angles/tol
