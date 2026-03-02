@@ -2,16 +2,17 @@
 """
 Extract inter-robot ground-truth loop closures from GT trajectory files.
 
-For every pair of robots, any two poses whose translation distance is within
---dist (metres) and relative rotation is within an angle threshold (degrees)
-are recorded as a loop closure.  Only inter-robot pairs are considered.
+For every pair of robots, any two poses whose XY distance is within
+--dist-xy (metres), Z distance within --dist-z (metres), and relative
+rotation within an angle threshold (degrees) are recorded as a loop closure.
+Only inter-robot pairs are considered.
 
 By default the script runs for three angle thresholds (10°, 20°, 30°) and
 saves a separate CSV and plot for each, plus a combined stats file.
 
 Usage:
     python extract_gt_loops.py ground_truth/campus
-    python extract_gt_loops.py ground_truth/campus --dist 2.0
+    python extract_gt_loops.py ground_truth/campus --dist-xy 2.0 --dist-z 1.0
     python extract_gt_loops.py ground_truth/campus --angles 5 15 30
 
 Output per threshold (tag = "angle<N>"):
@@ -79,11 +80,15 @@ def load_robots(gt_dir: Path) -> dict[str, tuple]:
 
 def find_loops(
     robots: dict[str, tuple],
-    dist_thresh: float,
+    dist_xy: float,
+    dist_z: float,
     angle_thresh_rad: float,
 ) -> list[dict]:
     """
     Find all inter-robot loop-closure pairs in pre-loaded robot data.
+
+    Candidates must satisfy:
+      XY distance ≤ dist_xy  AND  |Δz| ≤ dist_z  AND  angle ≤ angle_thresh_rad
 
     Returns a list of dicts with keys:
         robot_i, timestamp_i_ns, robot_j, timestamp_j_ns,
@@ -100,15 +105,21 @@ def find_loops(
         R_all_i = Rotation.from_quat(rot_i)  # (N_i,)
         R_all_j = Rotation.from_quat(rot_j)  # (N_j,)
 
-        # Spatial lookup: KD-tree gives candidates within translation threshold.
-        tree_j = cKDTree(pos_j)
-        candidate_lists = tree_j.query_ball_point(pos_i, r=dist_thresh)
+        # Spatial lookup: 2D KD-tree on XY, then Z filtered separately.
+        tree_j = cKDTree(pos_j[:, :2])
+        candidate_lists = tree_j.query_ball_point(pos_i[:, :2], r=dist_xy)
 
         n_loops_pair = 0
         for idx_i, candidates in enumerate(candidate_lists):
             if not candidates:
                 continue
             cands = np.asarray(candidates, dtype=np.intp)
+
+            # Filter by Z distance.
+            z_mask = np.abs(pos_j[cands, 2] - pos_i[idx_i, 2]) <= dist_z
+            cands = cands[z_mask]
+            if cands.size == 0:
+                continue
 
             # Vectorised rotation check: compute all relative rotations at once.
             R_rel_batch = R_all_i[idx_i].inv() * R_all_j[cands]
@@ -267,8 +278,10 @@ def main() -> None:
     )
     parser.add_argument("gt_dir", type=Path,
                         help="Folder containing per-robot GT CSV files (e.g. ground_truth/campus)")
-    parser.add_argument("--dist",   type=float, default=1.0,
-                        help="Max translation distance in metres (default: 1.0)")
+    parser.add_argument("--dist-xy", type=float, default=1.0, dest="dist_xy",
+                        help="Max XY distance in metres (default: 1.0)")
+    parser.add_argument("--dist-z",  type=float, default=1.0, dest="dist_z",
+                        help="Max Z distance in metres (default: 1.0)")
     parser.add_argument("--angles", type=float, nargs="+", default=[10.0, 20.0, 30.0],
                         help="Rotation thresholds in degrees to sweep (default: 10 20 30)")
     parser.add_argument("--plot", action="store_true",
@@ -283,7 +296,7 @@ def main() -> None:
         raise SystemExit(1)
 
     print(f"Experiment : {gt_dir.name}")
-    print(f"dist ≤ {args.dist} m  |  angle thresholds: {args.angles}°")
+    print(f"dist_xy ≤ {args.dist_xy} m  |  dist_z ≤ {args.dist_z} m  |  angle thresholds: {args.angles}°")
     print(f"Loading GT files from {gt_dir} ...")
     robots = load_robots(gt_dir)
 
@@ -297,7 +310,8 @@ def main() -> None:
 
     with open(stats_path, "w") as stats_f:
         stats_f.write(f"GT Loop Closure Statistics — {gt_dir.name}\n")
-        stats_f.write(f"dist threshold : {args.dist} m\n")
+        stats_f.write(f"dist_xy threshold : {args.dist_xy} m\n")
+        stats_f.write(f"dist_z  threshold : {args.dist_z} m\n")
         stats_f.write("=" * 60 + "\n\n")
 
         for angle_deg in args.angles:
@@ -305,7 +319,7 @@ def main() -> None:
             angle_rad = np.deg2rad(angle_deg)
 
             print(f"\n--- angle ≤ {angle_deg}° ---")
-            loops = find_loops(robots, args.dist, angle_rad)
+            loops = find_loops(robots, args.dist_xy, args.dist_z, angle_rad)
 
             # Save CSV
             csv_path = gt_dir / f"gt_loops_{tag}.csv"
