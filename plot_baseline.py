@@ -17,36 +17,19 @@ Usage:
 """
 
 import argparse
-import io
 import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from utils.io import load_alignment_from_evo_zip
+from utils.plot import IEEE_RC, apply_alignment, save_fig
 
-IEEE_RC = {
-    'text.usetex': False,
-    'font.family': 'serif',
-    'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-    'font.size': 8,
-    'axes.labelsize': 8,
-    'axes.titlesize': 8,
-    'legend.fontsize': 7,
-    'xtick.labelsize': 7,
-    'ytick.labelsize': 7,
-    'figure.figsize': (3.5, 3.5 * 3 / 4),
-    'figure.dpi': 300,
-    'savefig.dpi': 300,
-    'axes.linewidth': 0.5,
-    'lines.linewidth': 1.0,
-    'patch.linewidth': 0.5,
-    'pdf.fonttype': 42,
-    'ps.fonttype': 42,
-}
+# Local style override: slightly wider aspect ratio and thicker lines than default IEEE_RC
+_RC = {**IEEE_RC, 'figure.figsize': (3.5, 3.5 * 3 / 4), 'lines.linewidth': 1.0}
 
 
 def load_lcd_log(csv_path: Path) -> pd.DataFrame:
@@ -119,7 +102,7 @@ def plot_kimera_multi(experiment_dir: Path, output: Path | None = None) -> None:
     vlc_MB      = sum_series(dfs, "vlc_bytes",         t_common_ns) / 1e6
 
     # --- Plot ---
-    plt.rcParams.update(IEEE_RC)
+    plt.rcParams.update(_RC)
     fig, ax = plt.subplots()
     ax.plot(t_sec, loops_total, label="Loop Closures", color="#4C72B0")
     ax.plot(t_sec, bow_total,   label="BoW Matches",   color="#DD8452")
@@ -135,12 +118,7 @@ def plot_kimera_multi(experiment_dir: Path, output: Path | None = None) -> None:
     if output is not None:
         base = output.with_suffix("")
 
-    pdf_path = base.with_suffix(".pdf")
-    png_path = base.with_suffix(".png")
-    fig.savefig(pdf_path, bbox_inches="tight")
-    fig.savefig(png_path, bbox_inches="tight", dpi=300)
-    print(f"Saved to {pdf_path}")
-    print(f"Saved to {png_path}")
+    save_fig(fig, base)
     plt.close(fig)
 
     # --- Save raw data ---
@@ -230,32 +208,6 @@ def _write_tum(rows: list[tuple], path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Alignment helpers (mirrors evaluate.py)
-# ---------------------------------------------------------------------------
-
-def _load_alignment(zip_path: Path) -> tuple[np.ndarray, np.ndarray, float]:
-    """Load Sim(3)/SE(3) alignment from an evo_ape result zip."""
-    with zipfile.ZipFile(zip_path) as z:
-        if "alignment_transformation_sim3.npy" in z.namelist():
-            with z.open("alignment_transformation_sim3.npy") as f:
-                data = np.load(io.BytesIO(f.read()))
-            scale = float(np.linalg.norm(data[:3, 0]))
-            R = data[:3, :3] / scale
-            t = data[:3, 3]
-            return R, t, scale
-        elif "alignment_transformation_se3.npy" in z.namelist():
-            with z.open("alignment_transformation_se3.npy") as f:
-                data = np.load(io.BytesIO(f.read()))
-            return data[:3, :3], data[:3, 3], 1.0
-    print("Warning: no alignment found in zip, using identity.")
-    return np.eye(3), np.zeros(3), 1.0
-
-
-def _apply_alignment(positions: np.ndarray, R: np.ndarray, t: np.ndarray, scale: float) -> np.ndarray:
-    return scale * (R @ positions.T).T + t
-
-
-# ---------------------------------------------------------------------------
 # Trajectory plot (per-robot, aligned)
 # ---------------------------------------------------------------------------
 
@@ -276,10 +228,10 @@ def plot_trajectories_kimera_multi(
     robots_data: list of (robot_name, est_rows, gt_rows)
       where each row is (ts_s, x, y, z, qx, qy, qz, qw)
     """
-    R, t, scale = _load_alignment(evo_zip)
+    R, t, scale = load_alignment_from_evo_zip(evo_zip)
     print(f"Alignment — scale: {scale:.6f}, t: {t.round(3)}")
 
-    plt.rcParams.update(IEEE_RC)
+    plt.rcParams.update(_RC)
     fig, ax = plt.subplots(figsize=(3.5, 3.0))
 
     gt_labeled = False
@@ -288,7 +240,7 @@ def plot_trajectories_kimera_multi(
 
         if est_rows:
             pos_est = np.array([[r[1], r[2], r[3]] for r in est_rows])
-            pos_est_aligned = _apply_alignment(pos_est, R, t, scale)
+            pos_est_aligned = apply_alignment(pos_est, R, t, scale)
             ax.plot(pos_est_aligned[:, 0], pos_est_aligned[:, 1],
                     color=color, linewidth=1.0, label=robot)
 
@@ -307,10 +259,7 @@ def plot_trajectories_kimera_multi(
     ax.grid(True, alpha=0.3, linewidth=0.3)
     plt.tight_layout(pad=0.5)
 
-    for suffix in (".pdf", ".png"):
-        out = method_dir / f"trajectories_aligned{suffix}"
-        fig.savefig(out, bbox_inches="tight", pad_inches=0.02, dpi=300)
-        print(f"Saved to {out}")
+    save_fig(fig, method_dir / "trajectories_aligned", pad_inches=0.02)
     plt.close(fig)
 
 

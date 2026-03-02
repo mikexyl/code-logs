@@ -36,77 +36,10 @@ import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
-
-IEEE_RC = {
-    'text.usetex': False,
-    'font.family': 'serif',
-    'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-    'font.size': 8,
-    'axes.labelsize': 8,
-    'axes.titlesize': 8,
-    'legend.fontsize': 7,
-    'xtick.labelsize': 7,
-    'ytick.labelsize': 7,
-    'figure.figsize': (3.5, 3.5),
-    'figure.dpi': 300,
-    'savefig.dpi': 300,
-    'axes.linewidth': 0.5,
-    'lines.linewidth': 0.8,
-    'patch.linewidth': 0.5,
-    'pdf.fonttype': 42,
-    'ps.fonttype': 42,
-}
+from utils.io import load_gt_trajectory
+from utils.plot import IEEE_RC, save_fig
 
 ROBOT_COLORS = ["#A8C4E0", "#F4C08A", "#A3D4B0", "#E8A0A0", "#C4B8D8", "#C8B09A"]
-
-
-# ---------------------------------------------------------------------------
-# I/O helpers
-# ---------------------------------------------------------------------------
-
-def load_gt(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Load a ground-truth file.  Two formats are supported:
-
-    .csv  — comma-separated, timestamp in nanoseconds (int), qw qx qy qz
-    .txt  — space-separated TUM format, timestamp in seconds (float), qx qy qz qw
-
-    Returns:
-        timestamps : (N,)  int64 nanoseconds
-        positions  : (N,3) float64 xyz
-        rotations  : (N,4) float64 xyzw quaternion
-    """
-    is_tum = path.suffix == ".txt"
-    timestamps, positions, rotations = [], [], []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            parts = line.split() if is_tum else line.split(',')
-            if len(parts) < 8:
-                continue
-            try:
-                if is_tum:
-                    # TUM: ts(s) x y z qx qy qz qw
-                    ts = int(float(parts[0]) * 1_000_000_000)
-                    x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-                    qx, qy, qz, qw = (float(parts[4]), float(parts[5]),
-                                      float(parts[6]), float(parts[7]))
-                else:
-                    # CSV: ts(ns) x y z qw qx qy qz
-                    ts = int(float(parts[0]))
-                    x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-                    qw, qx, qy, qz = (float(parts[4]), float(parts[5]),
-                                      float(parts[6]), float(parts[7]))
-                timestamps.append(ts)
-                positions.append([x, y, z])
-                rotations.append([qx, qy, qz, qw])   # xyzw
-            except ValueError:
-                continue
-    return (np.array(timestamps, dtype=np.int64),
-            np.array(positions,  dtype=np.float64),
-            np.array(rotations,  dtype=np.float64))
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +67,7 @@ def load_robots(gt_dir: Path) -> dict[str, tuple]:
     robots: dict[str, tuple] = {}
     files = sorted(gt_dir.glob("*.csv")) + sorted(gt_dir.glob("*.txt"))
     for p in sorted(files):
-        ts, pos, rot = load_gt(p)
+        ts, pos, rot = load_gt_trajectory(p)
         if len(ts) == 0:
             print(f"  Warning: no poses loaded from {p.name}")
             continue
@@ -267,7 +200,7 @@ def visualize_loops(
     # Load full (non-downsampled) trajectories for display.
     full_traj: dict[str, np.ndarray] = {}
     for p in sorted(gt_dir.glob("*.csv")) + sorted(gt_dir.glob("*.txt")):
-        _, pos, _ = load_gt(p)
+        _, pos, _ = load_gt_trajectory(p)
         if len(pos):
             full_traj[p.stem] = pos
 
@@ -313,10 +246,7 @@ def visualize_loops(
     plt.tight_layout()
 
     stem = f"gt_loops_viz_{tag}" if tag else "gt_loops_viz"
-    for suffix in (".pdf", ".png"):
-        out = gt_dir / f"{stem}{suffix}"
-        fig.savefig(out, bbox_inches="tight", dpi=300)
-        print(f"  Saved {out}")
+    save_fig(fig, gt_dir / stem)
     plt.close(fig)
     print(f"  ({len(loop_lines)} loop closure lines plotted)")
 
