@@ -248,12 +248,12 @@ def plot_recall_comparison(paths: list[Path], folder: Path) -> None:
 
     for i, (p, d) in enumerate(datasets):
         color = COLORS[i % len(COLORS)]
+        label = "CoDE-SLAM" if d["label"] == folder.name else d["label"]
         ax.plot(d["angles"], d["recalls"], marker="o", markersize=3,
-                color=color, label=d["label"], linewidth=1.2)
+                color=color, label=label, linewidth=1.2)
 
     ax.set_xlabel("GT Rotation Threshold (°)")
     ax.set_ylabel("Recall")
-    ax.set_ylim(0, 1.0)
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
     plt.tight_layout()
