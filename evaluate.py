@@ -148,6 +148,134 @@ def apply_frame_transform(positions, T):
     return transformed[:, :3]
 
 
+def load_keyframes_csv(path):
+    """Load kimera_distributed_keyframes.csv.
+    Returns {keyframe_id (int): timestamp_s (float)}.
+    """
+    import csv as _csv
+    kf_map = {}
+    with open(path) as f:
+        for row in _csv.DictReader(f):
+            try:
+                kf_map[int(row['keyframe_id'])] = float(row['keyframe_stamp_ns']) / 1e9
+            except (ValueError, KeyError):
+                continue
+    return kf_map
+
+
+def load_loop_closures_csv(path):
+    """Load loop_closures.csv.
+    Returns list of dicts with keys robot1, pose1, robot2, pose2.
+    """
+    import csv as _csv
+    loops = []
+    with open(path) as f:
+        for row in _csv.DictReader(f):
+            try:
+                loops.append({
+                    'robot1': int(row['robot1']), 'pose1': int(row['pose1']),
+                    'robot2': int(row['robot2']), 'pose2': int(row['pose2']),
+                })
+            except (ValueError, KeyError):
+                continue
+    return loops
+
+
+def find_tum_position(ts_s, timestamps, positions, max_gap_s=2.5):
+    """Return the XYZ position from a TUM trajectory nearest to ts_s.
+    Returns None if the nearest match is further than max_gap_s away.
+    """
+    if len(timestamps) == 0:
+        return None
+    idx = int(np.argmin(np.abs(timestamps - ts_s)))
+    if abs(timestamps[idx] - ts_s) > max_gap_s:
+        return None
+    return positions[idx]
+
+
+def collect_loop_closure_lines(pairs, rotation, translation, scale):
+    """Resolve inter-robot loop closure endpoints in the aligned world frame.
+
+    For each robot in pairs, looks for:
+      <robot_dir>/distributed/kimera_distributed_keyframes.csv
+      <robot_dir>/distributed/loop_closures.csv
+
+    Uses the keyframe CSV to map pose indices → timestamps, then looks up
+    the nearest TUM position and applies the same Sim3 alignment used for
+    the estimated trajectories.
+
+    Returns a list of (aligned_pos1, aligned_pos2) numpy arrays (shape (3,)).
+    Silently skips if the distributed CSV files are not present.
+    """
+    from pathlib import Path as _Path
+
+    # Build robot_id → (timestamps, raw_positions) from the TUM files in pairs.
+    robot_trajs = {}   # {robot_id: (ts_array, pos_array)}
+    robot_kf_maps = {} # {robot_id: {keyframe_id: ts_s}}
+
+    for p in pairs:
+        robot_path = _Path(p['robot_path'])
+        try:
+            robot_id = int(robot_path.stem.split()[-1])
+        except ValueError:
+            continue
+        ts, pos, _ = read_tum_trajectory(str(robot_path))
+        robot_trajs[robot_id] = (np.array(ts), np.array(pos))
+
+        kf_path = robot_path.parent.parent / 'distributed' / 'kimera_distributed_keyframes.csv'
+        if kf_path.exists():
+            robot_kf_maps[robot_id] = load_keyframes_csv(str(kf_path))
+
+    if not robot_kf_maps:
+        return []
+
+    # Collect and deduplicate loop closures from every robot's distributed folder.
+    seen = set()
+    all_loops = []
+    for p in pairs:
+        robot_path = _Path(p['robot_path'])
+        lc_path = robot_path.parent.parent / 'distributed' / 'loop_closures.csv'
+        if not lc_path.exists():
+            continue
+        for lc in load_loop_closures_csv(str(lc_path)):
+            key = frozenset([(lc['robot1'], lc['pose1']), (lc['robot2'], lc['pose2'])])
+            if key not in seen:
+                seen.add(key)
+                all_loops.append(lc)
+
+    if not all_loops:
+        return []
+
+    # Resolve each loop closure to a pair of aligned world-frame positions.
+    lines = []
+    n_unresolved = 0
+    for lc in all_loops:
+        r1, p1 = lc['robot1'], lc['pose1']
+        r2, p2 = lc['robot2'], lc['pose2']
+        if r1 not in robot_trajs or r2 not in robot_trajs:
+            n_unresolved += 1
+            continue
+        if r1 not in robot_kf_maps or r2 not in robot_kf_maps:
+            n_unresolved += 1
+            continue
+        ts1 = robot_kf_maps[r1].get(p1)
+        ts2 = robot_kf_maps[r2].get(p2)
+        if ts1 is None or ts2 is None:
+            n_unresolved += 1
+            continue
+        raw1 = find_tum_position(ts1, robot_trajs[r1][0], robot_trajs[r1][1])
+        raw2 = find_tum_position(ts2, robot_trajs[r2][0], robot_trajs[r2][1])
+        if raw1 is None or raw2 is None:
+            n_unresolved += 1
+            continue
+        aligned1 = apply_alignment(raw1.reshape(1, 3), rotation, translation, scale)[0]
+        aligned2 = apply_alignment(raw2.reshape(1, 3), rotation, translation, scale)[0]
+        lines.append((aligned1, aligned2))
+
+    print(f"Loop closures: {len(lines)} drawn, {n_unresolved} unresolved")
+    return lines
+
+
 def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
     """
     Plot aligned robot trajectories with different colors and labels.
@@ -238,6 +366,15 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
                     linestyle='--', label=label)
             gt_plotted = True
     
+    # Plot loop closures (if distributed CSV files are present)
+    loop_lines = collect_loop_closure_lines(pairs, rotation, translation, scale)
+    lc_label_added = False
+    for p1, p2 in loop_lines:
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                color='#CC2222', linewidth=0.5, alpha=0.5, zorder=5,
+                label='Loop closure' if not lc_label_added else None)
+        lc_label_added = True
+
     ax.set_xlabel('X (m)')
     ax.set_ylabel('Y (m)')
     ax.legend(loc='best', framealpha=0.9, edgecolor='none')
