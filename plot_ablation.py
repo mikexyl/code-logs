@@ -212,50 +212,62 @@ def group_recall_files(folder: Path) -> list[Path]:
 
 
 def _load_recall(path: Path) -> dict | None:
-    """Load a loops_recall.csv and return {angles, recalls, label}.
+    """Load a loops_recall.csv and return {buckets, recalls, label}.
 
-    Overall recall per angle is computed by summing n_detected and n_total
+    Supports bucket format (bucket_min, bucket_max columns).
+    Overall recall per bucket is computed by summing n_detected and n_total
     across all robot pairs.
     """
-    agg: dict[int, list[int]] = defaultdict(lambda: [0, 0])  # angle → [det, tot]
+    agg: dict[tuple[int, int], list[int]] = defaultdict(lambda: [0, 0])
     with open(path) as f:
         for row in csv.DictReader(f):
             try:
-                angle = int(row["angle"])
-                agg[angle][0] += int(row["n_detected"])
-                agg[angle][1] += int(row["n_total"])
+                bmin = int(row["bucket_min"])
+                bmax = int(row["bucket_max"])
+                agg[(bmin, bmax)][0] += int(row["n_detected"])
+                agg[(bmin, bmax)][1] += int(row["n_total"])
             except (KeyError, ValueError):
                 continue
     if not agg:
         return None
-    angles  = sorted(agg.keys())
-    recalls = [agg[a][0] / agg[a][1] if agg[a][1] > 0 else 0.0 for a in angles]
-    # label: immediate parent directory name
-    label = path.parent.name
-    return {"angles": angles, "recalls": recalls, "label": label}
+    bucket_keys = sorted(agg.keys())
+    recalls = [agg[b][0] / agg[b][1] if agg[b][1] > 0 else 0.0 for b in bucket_keys]
+    labels  = [f"{bmin}-{bmax}°" for bmin, bmax in bucket_keys]
+    return {"bucket_keys": bucket_keys, "labels": labels,
+            "recalls": recalls, "label": path.parent.name}
 
 
 def plot_recall_comparison(paths: list[Path], folder: Path) -> None:
-    """Overlay recall-vs-angle curves for each variant."""
+    """Grouped bar chart of per-bucket recall for each variant."""
     datasets = [(p, _load_recall(p)) for p in paths]
     datasets = [(p, d) for p, d in datasets if d is not None]
     if not datasets:
         print("  No parseable recall data — skipping.")
         return
 
+    # All datasets must share the same bucket structure
+    bucket_labels = datasets[0][1]["labels"]
+    n_buckets  = len(bucket_labels)
+    n_variants = len(datasets)
+    width = 0.8 / n_variants
+
     plt.rcParams.update({**IEEE_RC, "figure.figsize": (3.5, 2.8)})
     fig, ax = plt.subplots()
 
     for i, (p, d) in enumerate(datasets):
-        color = COLORS[i % len(COLORS)]
-        label = "CoDE-SLAM" if d["label"] == folder.name else d["label"]
-        ax.plot(d["angles"], d["recalls"], marker="o", markersize=3,
-                color=color, label=label, linewidth=1.2)
+        color  = COLORS[i % len(COLORS)]
+        label  = "CoDE-SLAM" if d["label"] == folder.name else d["label"]
+        offset = (i - (n_variants - 1) / 2) * width
+        xs = [j + offset for j in range(n_buckets)]
+        ax.bar(xs, d["recalls"], width=width * 0.9, color=color,
+               alpha=0.85, label=label)
 
-    ax.set_xlabel("GT Rotation Threshold (°)")
+    ax.set_xticks(list(range(n_buckets)))
+    ax.set_xticklabels(bucket_labels, rotation=45, ha="right")
+    ax.set_xlabel("GT Rotation Bucket")
     ax.set_ylabel("Recall")
     ax.legend(loc="upper right")
-    ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
+    ax.grid(True, axis="y", alpha=0.3, linestyle="--", linewidth=0.3)
     plt.tight_layout()
 
     save_fig(fig, folder / "recall_comparison")

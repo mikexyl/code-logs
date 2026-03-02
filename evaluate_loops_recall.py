@@ -126,7 +126,8 @@ def load_gt_loops(gt_dir: Path) -> dict[int, list[dict]]:
     """
     Load all gt_loops_angle*.csv files from gt_dir.
 
-    Returns {angle_deg (int): [{'robot_i', 't_i_s', 'robot_j', 't_j_s'}, ...]}.
+    Returns {angle_deg (int): [{'robot_i', 't_i_s', 'robot_j', 't_j_s', '_key'}, ...]}.
+    _key is a canonical tuple for deduplication across cumulative angle files.
     """
     result: dict[int, list[dict]] = {}
     for p in sorted(gt_dir.glob('gt_loops_angle*.csv'), key=lambda p: int(re.search(r'angle(\d+)', p.stem).group(1))):
@@ -137,15 +138,41 @@ def load_gt_loops(gt_dir: Path) -> dict[int, list[dict]]:
         loops: list[dict] = []
         with open(p) as f:
             for row in csv.DictReader(f):
+                ri, ti_ns = row['robot_i'], int(float(row['timestamp_i_ns']))
+                rj, tj_ns = row['robot_j'], int(float(row['timestamp_j_ns']))
+                if ri > rj:
+                    ri, rj, ti_ns, tj_ns = rj, ri, tj_ns, ti_ns
                 loops.append({
                     'robot_i': row['robot_i'],
                     't_i_s':   float(row['timestamp_i_ns']) / 1e9,
                     'robot_j': row['robot_j'],
                     't_j_s':   float(row['timestamp_j_ns']) / 1e9,
+                    '_key':    (ri, ti_ns, rj, tj_ns),
                 })
         result[angle] = loops
         print(f'  GT angle {angle:2d}°: {len(loops):6d} loops')
     return result
+
+
+def compute_bucket_loops(
+    gt_by_angle: dict[int, list[dict]],
+    angles: list[int],
+) -> dict[tuple[int, int], list[dict]]:
+    """Split cumulative angle files into exclusive rotation-angle buckets.
+
+    Bucket (prev, cur) contains only GT loops that appear in gt_loops_angle<cur>
+    but NOT in gt_loops_angle<prev> (i.e. rotation in (prev°, cur°]).
+    The first bucket is (0, angles[0]).
+    """
+    buckets: dict[tuple[int, int], list[dict]] = {}
+    prev_keys: set = set()
+    for i, angle in enumerate(angles):
+        curr_loops = gt_by_angle[angle]
+        curr_keys  = {l['_key'] for l in curr_loops}
+        bucket_min = angles[i - 1] if i > 0 else 0
+        buckets[(bucket_min, angle)] = [l for l in curr_loops if l['_key'] not in prev_keys]
+        prev_keys = curr_keys
+    return buckets
 
 
 # ---------------------------------------------------------------------------
@@ -249,10 +276,14 @@ def main() -> None:
     if args.max_angle is not None:
         angles = [a for a in angles if a <= args.max_angle]
 
-    # Recall per angle per pair
-    recall_data: dict[int, dict[tuple[str, str], tuple[int, int]]] = {}
-    for angle in angles:
-        recall_data[angle] = compute_recall(detected, gt_by_angle[angle], args.tol)
+    # Compute bucket-specific GT loops
+    buckets = compute_bucket_loops(gt_by_angle, angles)
+    bucket_keys = sorted(buckets.keys())   # list of (min_angle, max_angle)
+
+    # Recall per bucket
+    bucket_recall: dict[tuple[int, int], dict[tuple[str, str], tuple[int, int]]] = {}
+    for bk in bucket_keys:
+        bucket_recall[bk] = compute_recall(detected, buckets[bk], args.tol)
 
     # -----------------------------------------------------------------------
     # Stats output
@@ -264,20 +295,23 @@ def main() -> None:
         f.write(f'Loop Closure Recall — {exp_dir.name}\n')
         f.write(f'Time tolerance : {args.tol} s\n')
         f.write('=' * 60 + '\n\n')
-        for angle in angles:
-            pair_counts = recall_data[angle]
+        for bk in bucket_keys:
+            bmin, bmax = bk
+            pair_counts = bucket_recall[bk]
             total_det = sum(v[0] for v in pair_counts.values())
             total_gt  = sum(v[1] for v in pair_counts.values())
             overall   = total_det / total_gt if total_gt > 0 else float('nan')
-            f.write(f'angle <= {angle:2d}°  overall recall: '
+            label = f'{bmin}-{bmax}°'
+            f.write(f'bucket {label:8s}  overall recall: '
                     f'{overall:.3f}  ({total_det}/{total_gt})\n')
-            print(f'angle <= {angle:2d}°  overall recall: '
+            print(f'bucket {label:8s}  overall recall: '
                   f'{overall:.3f}  ({total_det}/{total_gt})')
             for (ra, rb), (nd, nt) in sorted(pair_counts.items()):
                 r = nd / nt if nt > 0 else float('nan')
                 f.write(f'  {ra} <-> {rb}: {r:.3f}  ({nd}/{nt})\n')
                 csv_rows.append({
-                    'angle': angle, 'pair': f'{ra}<->{rb}',
+                    'bucket_min': bmin, 'bucket_max': bmax,
+                    'pair': f'{ra}<->{rb}',
                     'n_detected': nd, 'n_total': nt,
                     'recall': f'{r:.4f}',
                 })
@@ -288,32 +322,33 @@ def main() -> None:
     csv_path = exp_dir / 'loops_recall.csv'
     with open(csv_path, 'w', newline='') as f:
         writer = csv.DictWriter(
-            f, fieldnames=['angle', 'pair', 'n_detected', 'n_total', 'recall'])
+            f, fieldnames=['bucket_min', 'bucket_max', 'pair', 'n_detected', 'n_total', 'recall'])
         writer.writeheader()
         writer.writerows(csv_rows)
     print(f'CSV   → {csv_path}')
 
     # -----------------------------------------------------------------------
-    # Curve: overall recall vs angle threshold
+    # Bar chart: overall recall per rotation bucket
     # -----------------------------------------------------------------------
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
     fig, ax = plt.subplots()
 
-    overall_recalls = []
-    for angle in angles:
-        pair_counts = recall_data[angle]
+    bucket_labels  = [f'{bmin}-{bmax}°' for bmin, bmax in bucket_keys]
+    bucket_recalls = []
+    for bk in bucket_keys:
+        pair_counts = bucket_recall[bk]
         total_det = sum(v[0] for v in pair_counts.values())
         total_gt  = sum(v[1] for v in pair_counts.values())
-        overall_recalls.append(total_det / total_gt if total_gt > 0 else 0.0)
+        bucket_recalls.append(total_det / total_gt if total_gt > 0 else 0.0)
 
-    ax.plot(angles, overall_recalls, marker='o', markersize=3,
-            color='#4C72B0', linewidth=1.2)
+    xs = list(range(len(bucket_keys)))
+    ax.bar(xs, bucket_recalls, width=0.6, color='#4C72B0', alpha=0.85)
 
-    ax.set_xlabel('GT Rotation Threshold (°)')
+    ax.set_xticks(xs)
+    ax.set_xticklabels(bucket_labels, rotation=45, ha='right')
+    ax.set_xlabel('GT Rotation Bucket')
     ax.set_ylabel('Recall')
-    ax.set_xlim(angles[0], angles[-1])
-    ax.set_ylim(0, 1.0)
-    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+    ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
 
     save_fig(fig, exp_dir / 'loops_recall')
