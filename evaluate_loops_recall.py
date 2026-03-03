@@ -443,8 +443,9 @@ def compute_outlier_ratio(
 ) -> tuple[float, int] | None:
     """Compute outlier ratio for detected loops that carry a relative-pose estimate.
 
-    A detected loop is an outlier if its estimated relative translation or
-    rotation deviates from the GT relative pose by more than the threshold.
+    A detected loop is an outlier if:
+      - relative translation error > trans_thr * GT distance  (e.g. 0.5 = 50%)
+      - OR rotation error > rot_thr degrees
 
     Returns (outlier_ratio, n_evaluated) or None if no evaluable loops found.
     """
@@ -508,11 +509,15 @@ def compute_outlier_ratio(
             p_det = np.array([lc['tx'], lc['ty'], lc['tz']])
             R_det = _quat_xyzw_to_rot(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
 
+            gt_dist   = float(np.linalg.norm(p_rel_gt))
             trans_err = float(np.linalg.norm(p_det - p_rel_gt))
             rot_err   = _rot_angle_deg(R_det.T @ R_rel_gt)
 
+            # Relative translation error as fraction of GT distance
+            rel_trans_err = trans_err / max(gt_dist, 1e-3)
+
             n_total += 1
-            if trans_err > trans_thr or rot_err > rot_thr:
+            if rel_trans_err > trans_thr or rot_err > rot_thr:
                 n_outliers += 1
 
     if n_total == 0:
@@ -556,7 +561,7 @@ def plot_outlier_comparison(
     ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=6)
     ax.set_ylabel('Outlier Ratio')
     ax.set_ylim(0, 1.1)
-    ax.set_title(f'Loop Outlier Ratio (err > {trans_thr:.0f} m or {rot_thr:.0f}°)',
+    ax.set_title(f'Loop Outlier Ratio (trans > {trans_thr*100:.0f}% GT dist or rot > {rot_thr:.0f}°)',
                  fontsize=7)
     ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
@@ -581,8 +586,8 @@ def main() -> None:
                         help='Timestamp tolerance in seconds (default: 2.0)')
     parser.add_argument('--max-angle', type=int, default=None, dest='max_angle',
                         help='Only evaluate angle thresholds up to this value in degrees')
-    parser.add_argument('--trans-thr', type=float, default=5.0, dest='trans_thr',
-                        help='Translation error threshold for outlier detection in metres (default: 5.0)')
+    parser.add_argument('--trans-thr', type=float, default=2.0, dest='trans_thr',
+                        help='Relative translation error threshold for outlier detection as fraction of GT distance (default: 2.0 = 200%%)')
     parser.add_argument('--rot-thr', type=float, default=40.0, dest='rot_thr',
                         help='Rotation error threshold for outlier detection in degrees (default: 40.0)')
     parser.add_argument('--max-gap', type=float, default=2.5, dest='max_gap',
@@ -650,7 +655,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Outlier analysis: compare detected relative pose vs GT
     # ------------------------------------------------------------------
-    print(f'\n--- Outlier analysis (trans_thr={args.trans_thr} m, rot_thr={args.rot_thr}°) ---')
+    print(f'\n--- Outlier analysis (trans_thr={args.trans_thr*100:.0f}% GT dist, rot_thr={args.rot_thr}°) ---')
 
     # Collect all robot names across variants + baselines to load GT poses
     all_eval_dirs = (eval_dirs_variant + eval_dirs_baseline) if not single_mode else [exp_dir]
