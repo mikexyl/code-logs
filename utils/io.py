@@ -69,16 +69,21 @@ def load_loop_closures_csv(path):
     """Load loop_closures.csv.
 
     Returns:
-        list of dicts with keys: robot1, pose1, robot2, pose2
+        list of dicts with keys: robot1, pose1, robot2, pose2,
+        and optionally tx, ty, tz, qx, qy, qz, qw if present in the CSV.
     """
     loops = []
     with open(path) as f:
         for row in _csv.DictReader(f):
             try:
-                loops.append({
+                lc = {
                     'robot1': int(row['robot1']), 'pose1': int(row['pose1']),
                     'robot2': int(row['robot2']), 'pose2': int(row['pose2']),
-                })
+                }
+                for field in ('tx', 'ty', 'tz', 'qx', 'qy', 'qz', 'qw'):
+                    if row.get(field) not in (None, ''):
+                        lc[field] = float(row[field])
+                loops.append(lc)
             except (ValueError, KeyError):
                 continue
     return loops
