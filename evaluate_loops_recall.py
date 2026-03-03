@@ -7,18 +7,25 @@ keyframe CSV), any GT loop for the same robot pair whose both timestamps fall
 within --tol seconds of the detected timestamps is counted as "detected".
 
 Recall is computed per robot-pair and overall for each GT angle threshold
-found in <gt_dir>/gt_loops_angle*.csv.  A box plot shows the per-pair recall
-distribution across thresholds.
+found in <gt_dir>/gt_loops_angle*.csv.
+
+If <experiment_dir> contains variant sub-folders (each holding robot subdirs
+with distributed/ or dpgo/ data), all variants are evaluated and a
+recall_comparison plot is saved to <experiment_dir>.  Otherwise the script
+evaluates <experiment_dir> directly (backward-compatible behaviour).
 
 Usage:
     python evaluate_loops_recall.py <experiment_dir> <gt_dir>
-    python evaluate_loops_recall.py a5678 ground_truth/a5678
+    python evaluate_loops_recall.py campus ground_truth/campus --tol 5.0
     python evaluate_loops_recall.py a5678 ground_truth/a5678 --tol 2.0
 
-Output:
-    <experiment_dir>/loops_recall.txt   – human-readable stats
-    <experiment_dir>/loops_recall.csv   – machine-readable per-pair table
-    <experiment_dir>/loops_recall.pdf/png – box plot
+Output (per variant):
+    <variant_dir>/loops_recall.txt   – human-readable stats
+    <variant_dir>/loops_recall.csv   – machine-readable per-pair table
+    <variant_dir>/loops_recall.pdf/png – single-variant recall curve
+
+Output (multi-variant only):
+    <experiment_dir>/recall_comparison.pdf/png – comparison across all variants
 """
 
 import argparse
@@ -26,7 +33,6 @@ import csv
 import re
 from pathlib import Path
 
-import numpy as np
 import matplotlib.pyplot as plt
 import yaml
 
@@ -230,70 +236,64 @@ def compute_recall(
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Variant discovery
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description='Evaluate loop closure recall against GT loops.'
-    )
-    parser.add_argument('experiment_dir', type=Path,
-                        help='Experiment folder (e.g. a5678)')
-    parser.add_argument('gt_dir', type=Path,
-                        help='Folder containing gt_loops_angle*.csv files '
-                             '(e.g. ground_truth/a5678)')
-    parser.add_argument('--tol', type=float, default=2.0,
-                        help='Timestamp tolerance in seconds (default: 2.0)')
-    parser.add_argument('--max-angle', type=int, default=None, dest='max_angle',
-                        help='Only plot angle thresholds up to this value in degrees')
-    args = parser.parse_args()
+def _is_robot_dir(d: Path) -> bool:
+    return (d / 'distributed').is_dir() or (d / 'dpgo').is_dir()
 
-    exp_dir = args.experiment_dir.resolve()
-    gt_dir  = args.gt_dir.resolve()
 
-    print(f'Experiment : {exp_dir.name}')
-    print(f'GT dir     : {gt_dir}')
-    print(f'Time tol   : {args.tol} s\n')
+def discover_variants(exp_dir: Path) -> list[Path]:
+    """Return subdirs of exp_dir that look like variant experiment dirs.
 
-    # Robots
-    id_to_name = discover_robots(exp_dir)
+    A variant dir is a subdir that contains at least one robot subdir
+    (identified by having a distributed/ or dpgo/ folder inside).
+    """
+    variants = []
+    for d in sorted(exp_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        if any(_is_robot_dir(sub) for sub in d.iterdir() if sub.is_dir()):
+            variants.append(d)
+    return variants
+
+
+# ---------------------------------------------------------------------------
+# Per-variant evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_one(
+    variant_dir: Path,
+    buckets: dict[tuple[int, int], list[dict]],
+    bucket_keys: list[tuple[int, int]],
+    tol_s: float,
+) -> dict | None:
+    """Evaluate recall for one variant dir. Saves CSV/txt.
+
+    Returns {label, xs, recalls} for plotting, or None on failure.
+    """
+    id_to_name = discover_robots(variant_dir)
     if not id_to_name:
-        print('No robots found (need dpgo/Robot N.tum).')
-        raise SystemExit(1)
+        print(f'  [SKIP] No robots found in {variant_dir.name}')
+        return None
     print(f'Robots: { {v: k for k, v in id_to_name.items()} }')
 
-    # Detected loops
-    detected = load_detected_loops(exp_dir, id_to_name)
-    print(f'Detected loops (unique, resolved): {len(detected)}\n')
+    detected = load_detected_loops(variant_dir, id_to_name)
+    print(f'Detected loops (unique, resolved): {len(detected)}')
 
-    # GT loops
-    print('Loading GT loops...')
-    gt_by_angle = load_gt_loops(gt_dir)
-    if not gt_by_angle:
-        print('No gt_loops_angle*.csv files found.')
-        raise SystemExit(1)
-    angles = sorted(gt_by_angle.keys())
-    if args.max_angle is not None:
-        angles = [a for a in angles if a <= args.max_angle]
-
-    # Compute bucket-specific GT loops
-    buckets = compute_bucket_loops(gt_by_angle, angles)
-    bucket_keys = sorted(buckets.keys())   # list of (min_angle, max_angle)
-
-    # Recall per bucket
-    bucket_recall: dict[tuple[int, int], dict[tuple[str, str], tuple[int, int]]] = {}
+    bucket_recall: dict[tuple[int, int], dict] = {}
     for bk in bucket_keys:
-        bucket_recall[bk] = compute_recall(detected, buckets[bk], args.tol)
+        bucket_recall[bk] = compute_recall(detected, buckets[bk], tol_s)
 
-    # -----------------------------------------------------------------------
-    # Stats output
-    # -----------------------------------------------------------------------
-    stats_path = exp_dir / 'loops_recall.txt'
+    # Stats + CSV
+    stats_path = variant_dir / 'loops_recall.txt'
     csv_rows: list[dict] = []
+    xs = [bmax for _, bmax in bucket_keys]
+    recalls = []
 
     with open(stats_path, 'w') as f:
-        f.write(f'Loop Closure Recall — {exp_dir.name}\n')
-        f.write(f'Time tolerance : {args.tol} s\n')
+        f.write(f'Loop Closure Recall — {variant_dir.name}\n')
+        f.write(f'Time tolerance : {tol_s} s\n')
         f.write('=' * 60 + '\n\n')
         for bk in bucket_keys:
             bmin, bmax = bk
@@ -306,6 +306,7 @@ def main() -> None:
                     f'{overall:.3f}  ({total_det}/{total_gt})\n')
             print(f'bucket {label:8s}  overall recall: '
                   f'{overall:.3f}  ({total_det}/{total_gt})')
+            recalls.append(total_det / total_gt if total_gt > 0 else 0.0)
             for (ra, rb), (nd, nt) in sorted(pair_counts.items()):
                 r = nd / nt if nt > 0 else float('nan')
                 f.write(f'  {ra} <-> {rb}: {r:.3f}  ({nd}/{nt})\n')
@@ -317,9 +318,9 @@ def main() -> None:
                 })
             f.write('\n')
 
-    print(f'\nStats → {stats_path}')
+    print(f'Stats → {stats_path}')
 
-    csv_path = exp_dir / 'loops_recall.csv'
+    csv_path = variant_dir / 'loops_recall.csv'
     with open(csv_path, 'w', newline='') as f:
         writer = csv.DictWriter(
             f, fieldnames=['bucket_min', 'bucket_max', 'pair', 'n_detected', 'n_total', 'recall'])
@@ -327,32 +328,107 @@ def main() -> None:
         writer.writerows(csv_rows)
     print(f'CSV   → {csv_path}')
 
-    # -----------------------------------------------------------------------
-    # Bar chart: overall recall per rotation bucket
-    # -----------------------------------------------------------------------
+    return {'label': variant_dir.name, 'xs': xs, 'recalls': recalls}
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+def plot_single(data: dict, out_dir: Path) -> None:
+    """Single-variant recall curve."""
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
     fig, ax = plt.subplots()
-
-    xs = [bmax for _, bmax in bucket_keys]
-    bucket_recalls = []
-    for bk in bucket_keys:
-        pair_counts = bucket_recall[bk]
-        total_det = sum(v[0] for v in pair_counts.values())
-        total_gt  = sum(v[1] for v in pair_counts.values())
-        bucket_recalls.append(total_det / total_gt if total_gt > 0 else 0.0)
-
-    ax.plot(xs, bucket_recalls, color='#4C72B0', marker='o', markersize=3)
-
-    ax.set_xticks(xs)
-    ax.set_xticklabels([f'{x}°' for x in xs])
+    ax.plot(data['xs'], data['recalls'], color='#4C72B0', marker='o', markersize=3)
+    ax.set_xticks(data['xs'])
+    ax.set_xticklabels([f'{x}°' for x in data['xs']])
     ax.set_xlabel('GT Rotation Bucket Upper Bound')
     ax.set_ylabel('Recall')
     ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
-
-    save_fig(fig, exp_dir / 'loops_recall')
+    save_fig(fig, out_dir / 'loops_recall')
     plt.close(fig)
-    print(f'Plot  → {exp_dir}/loops_recall.pdf')
+    print(f'Plot  → {out_dir}/loops_recall.pdf')
+
+
+def plot_comparison(variants: list[dict], out_dir: Path) -> None:
+    """Multi-variant recall comparison."""
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
+    fig, ax = plt.subplots()
+    for i, d in enumerate(variants):
+        color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
+        ax.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3, label=d['label'])
+    xs = variants[0]['xs']
+    ax.set_xticks(xs)
+    ax.set_xticklabels([f'{x}°' for x in xs])
+    ax.set_xlabel('GT Rotation Bucket Upper Bound')
+    ax.set_ylabel('Recall')
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+    plt.tight_layout()
+    save_fig(fig, out_dir / 'recall_comparison')
+    plt.close(fig)
+    print(f'Comparison → {out_dir}/recall_comparison.pdf')
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description='Evaluate loop closure recall against GT loops.'
+    )
+    parser.add_argument('experiment_dir', type=Path,
+                        help='Experiment folder (e.g. campus) or a variant subfolder')
+    parser.add_argument('gt_dir', type=Path,
+                        help='Folder containing gt_loops_angle*.csv files')
+    parser.add_argument('--tol', type=float, default=2.0,
+                        help='Timestamp tolerance in seconds (default: 2.0)')
+    parser.add_argument('--max-angle', type=int, default=None, dest='max_angle',
+                        help='Only evaluate angle thresholds up to this value in degrees')
+    args = parser.parse_args()
+
+    exp_dir = args.experiment_dir.resolve()
+    gt_dir  = args.gt_dir.resolve()
+
+    print(f'Experiment : {exp_dir.name}')
+    print(f'GT dir     : {gt_dir}')
+    print(f'Time tol   : {args.tol} s\n')
+
+    # Load GT loops once (shared across all variants)
+    print('Loading GT loops...')
+    gt_by_angle = load_gt_loops(gt_dir)
+    if not gt_by_angle:
+        print('No gt_loops_angle*.csv files found.')
+        raise SystemExit(1)
+    angles = sorted(gt_by_angle.keys())
+    if args.max_angle is not None:
+        angles = [a for a in angles if a <= args.max_angle]
+
+    buckets = compute_bucket_loops(gt_by_angle, angles)
+    bucket_keys = sorted(buckets.keys())
+
+    # Discover variants or fall back to single-experiment mode
+    variants = discover_variants(exp_dir)
+    if variants:
+        print(f'\nFound {len(variants)} variant(s): {[v.name for v in variants]}\n')
+        results = []
+        for v in variants:
+            print(f'--- {v.name} ---')
+            r = evaluate_one(v, buckets, bucket_keys, args.tol)
+            if r:
+                results.append(r)
+            print()
+        if len(results) >= 2:
+            plot_comparison(results, exp_dir)
+        elif results:
+            plot_single(results[0], exp_dir)
+    else:
+        # Single-experiment mode (backward compatible)
+        r = evaluate_one(exp_dir, buckets, bucket_keys, args.tol)
+        if r:
+            plot_single(r, exp_dir)
 
 
 if __name__ == '__main__':
