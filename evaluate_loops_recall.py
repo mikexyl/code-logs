@@ -258,6 +258,23 @@ def discover_variants(exp_dir: Path) -> list[Path]:
     return variants
 
 
+def discover_baselines(exp_dir: Path) -> list[Path]:
+    """Return baseline method dirs from baselines/<exp_dir.name>/*.
+
+    Only includes dirs where discover_robots() returns results.
+    """
+    baseline_root = exp_dir.parent / 'baselines' / exp_dir.name
+    if not baseline_root.exists():
+        return []
+    baselines = []
+    for d in sorted(baseline_root.iterdir()):
+        if not d.is_dir():
+            continue
+        if discover_robots(d):
+            baselines.append(d)
+    return baselines
+
+
 # ---------------------------------------------------------------------------
 # Per-variant evaluation
 # ---------------------------------------------------------------------------
@@ -351,14 +368,18 @@ def plot_single(data: dict, out_dir: Path) -> None:
     print(f'Plot  → {out_dir}/loops_recall.pdf')
 
 
-def plot_comparison(variants: list[dict], out_dir: Path) -> None:
-    """Multi-variant recall comparison."""
+def plot_comparison(variants: list[dict], baselines: list[dict], out_dir: Path) -> None:
+    """Multi-variant recall comparison, with baselines shown as dashed lines."""
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
     fig, ax = plt.subplots()
     for i, d in enumerate(variants):
         color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
         ax.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3, label=d['label'])
-    xs = variants[0]['xs']
+    for i, d in enumerate(baselines):
+        color = ROBOT_COLORS[(len(variants) + i) % len(ROBOT_COLORS)]
+        ax.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3,
+                linestyle='--', label=d['label'])
+    xs = variants[0]['xs'] if variants else baselines[0]['xs']
     ax.set_xticks(xs)
     ax.set_xticklabels([f'{x}°' for x in xs])
     ax.set_xlabel('GT Rotation Bucket Upper Bound')
@@ -411,19 +432,32 @@ def main() -> None:
 
     # Discover variants or fall back to single-experiment mode
     variants = discover_variants(exp_dir)
-    if variants:
-        print(f'\nFound {len(variants)} variant(s): {[v.name for v in variants]}\n')
-        results = []
+    baselines = discover_baselines(exp_dir)
+
+    if variants or baselines:
+        variant_results = []
+        if variants:
+            print(f'\nFound {len(variants)} variant(s): {[v.name for v in variants]}')
         for v in variants:
-            print(f'--- {v.name} ---')
+            print(f'\n--- {v.name} ---')
             r = evaluate_one(v, buckets, bucket_keys, args.tol)
             if r:
-                results.append(r)
-            print()
-        if len(results) >= 2:
-            plot_comparison(results, exp_dir)
-        elif results:
-            plot_single(results[0], exp_dir)
+                variant_results.append(r)
+
+        baseline_results = []
+        if baselines:
+            print(f'\nFound {len(baselines)} baseline(s): {[b.name for b in baselines]}')
+        for b in baselines:
+            print(f'\n--- {b.name} (baseline) ---')
+            r = evaluate_one(b, buckets, bucket_keys, args.tol)
+            if r:
+                baseline_results.append(r)
+
+        all_results = variant_results + baseline_results
+        if len(all_results) >= 2:
+            plot_comparison(variant_results, baseline_results, exp_dir)
+        elif all_results:
+            plot_single(all_results[0], exp_dir)
     else:
         # Single-experiment mode (backward compatible)
         r = evaluate_one(exp_dir, buckets, bucket_keys, args.tol)
