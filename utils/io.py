@@ -60,7 +60,7 @@ def load_keyframes_csv(path):
         for row in _csv.DictReader(f):
             try:
                 kf_map[int(row['keyframe_id'])] = float(row['keyframe_stamp_ns']) / 1e9
-            except (ValueError, KeyError):
+            except (ValueError, KeyError, TypeError):
                 continue
     return kf_map
 
