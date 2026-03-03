@@ -5,17 +5,17 @@ using ground-truth trajectory orientations.
 
 For each detected loop the GT trajectory orientations of both robots are looked
 up at the loop timestamps (nearest-neighbour), and the angle of the relative
-rotation is computed.  A histogram is plotted for each supplied method,
-overlaid on a single axes.
+rotation is computed.
+
+If <exp_dir> contains variant sub-folders (each holding robot subdirs with
+distributed/ or dpgo/ data), all variants are overlaid on the same axes.
+Baselines are auto-discovered from baselines/<exp_dir.name>/*/ and shown with
+dashed lines.  If no variants are found, <exp_dir> itself is evaluated directly
+(backward-compatible).
 
 Usage:
-    python plot_loop_rotation_dist.py <exp_dir> <gt_dir> \
-        [--baseline <baseline_dir>] [--label <label>] \
-        [--baseline-label <label>] [--max-gap 2.5]
-
-Example:
-    python plot_loop_rotation_dist.py campus ground_truth/campus \
-        --baseline baselines/campus/Kimera-Multi --label CoDE-SLAM
+    python plot_loop_rotation_dist.py <exp_dir> <gt_dir>
+    python plot_loop_rotation_dist.py campus ground_truth/campus
 """
 
 import argparse
@@ -61,6 +61,30 @@ def discover_robots(exp_dir: Path) -> dict[int, str]:
                 continue
             id_to_name[rid] = robot_dir.name
     return id_to_name
+
+
+def _is_robot_dir(d: Path) -> bool:
+    return (d / 'distributed').is_dir() or (d / 'dpgo').is_dir()
+
+
+def discover_variants(exp_dir: Path) -> list[Path]:
+    """Return subdirs of exp_dir that contain robot subdirs."""
+    variants = []
+    for d in sorted(exp_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        if any(_is_robot_dir(sub) for sub in d.iterdir() if sub.is_dir()):
+            variants.append(d)
+    return variants
+
+
+def discover_baselines(exp_dir: Path) -> list[Path]:
+    """Return baseline method dirs from baselines/<exp_dir.name>/*/."""
+    baseline_root = exp_dir.parent / 'baselines' / exp_dir.name
+    if not baseline_root.exists():
+        return []
+    return [d for d in sorted(baseline_root.iterdir())
+            if d.is_dir() and discover_robots(d)]
 
 
 def load_detected_loops(exp_dir: Path, id_to_name: dict[int, str]) -> list[dict]:
@@ -144,6 +168,19 @@ def compute_angles(loops: list[dict], gt_rots: dict, max_gap_s: float) -> np.nda
     return np.array(angles)
 
 
+def load_angles_for_dir(d: Path, gt_dir: Path, max_gap_s: float) -> tuple[str, np.ndarray] | None:
+    """Discover robots, load loops, compute rotation angles. Returns (label, angles) or None."""
+    id_to_name = discover_robots(d)
+    if not id_to_name:
+        print(f'  [SKIP] No robots found in {d.name}')
+        return None
+    loops = load_detected_loops(d, id_to_name)
+    gt_rots = load_gt_rotations(gt_dir, list(set(id_to_name.values())))
+    angles = compute_angles(loops, gt_rots, max_gap_s)
+    print(f'[{d.name}] {len(loops)} detected loops → {len(angles)} with GT rotation')
+    return (d.name, angles)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -152,14 +189,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description='Plot GT relative-rotation distribution of detected loop closures.'
     )
-    parser.add_argument('exp_dir', type=Path, help='Main experiment folder')
+    parser.add_argument('exp_dir', type=Path, help='Experiment folder')
     parser.add_argument('gt_dir',  type=Path, help='GT folder with <robot>.csv/.txt files')
-    parser.add_argument('--baseline', type=Path, default=None,
-                        help='Baseline experiment folder to overlay')
-    parser.add_argument('--label', default=None,
-                        help='Legend label for main experiment (default: folder name)')
-    parser.add_argument('--baseline-label', default=None, dest='baseline_label',
-                        help='Legend label for baseline (default: folder name)')
     parser.add_argument('--max-gap', type=float, default=2.5, dest='max_gap',
                         help='Max timestamp gap for GT lookup in seconds (default: 2.5)')
     parser.add_argument('--max-angle', type=float, default=120.0, dest='max_angle',
@@ -171,37 +202,40 @@ def main() -> None:
     exp_dir = args.exp_dir.resolve()
     gt_dir  = args.gt_dir.resolve()
 
-    datasets: list[tuple[str, np.ndarray]] = []
+    # Discover variants and baselines
+    variants  = discover_variants(exp_dir)
+    baselines = discover_baselines(exp_dir)
 
-    # ---- main experiment ----
-    id_to_name = discover_robots(exp_dir)
-    if not id_to_name:
-        print(f'No robots found in {exp_dir}')
+    variant_data:  list[tuple[str, np.ndarray]] = []
+    baseline_data: list[tuple[str, np.ndarray]] = []
+
+    if variants:
+        print(f'Found {len(variants)} variant(s): {[v.name for v in variants]}')
+        for v in variants:
+            r = load_angles_for_dir(v, gt_dir, args.max_gap)
+            if r:
+                variant_data.append(r)
+    else:
+        # Single-experiment fallback
+        r = load_angles_for_dir(exp_dir, gt_dir, args.max_gap)
+        if r:
+            variant_data.append(r)
+
+    if baselines:
+        print(f'Found {len(baselines)} baseline(s): {[b.name for b in baselines]}')
+        for b in baselines:
+            r = load_angles_for_dir(b, gt_dir, args.max_gap)
+            if r:
+                baseline_data.append(r)
+
+    all_data = variant_data + baseline_data
+    if not all_data:
+        print('No data to plot.')
         raise SystemExit(1)
-    loops_main = load_detected_loops(exp_dir, id_to_name)
-    gt_rots    = load_gt_rotations(gt_dir, list(set(id_to_name.values())))
-    angles_main = compute_angles(loops_main, gt_rots, args.max_gap)
-    label_main  = args.label or exp_dir.name
-    print(f'[{label_main}] {len(loops_main)} detected loops → {len(angles_main)} with GT rotation')
-    datasets.append((label_main, angles_main))
 
-    # ---- optional baseline ----
-    if args.baseline:
-        base_dir = args.baseline.resolve()
-        id_to_name_b = discover_robots(base_dir)
-        if not id_to_name_b:
-            print(f'No robots found in {base_dir}')
-        else:
-            loops_base  = load_detected_loops(base_dir, id_to_name_b)
-            gt_rots_b   = load_gt_rotations(gt_dir, list(set(id_to_name_b.values())))
-            angles_base = compute_angles(loops_base, gt_rots_b, args.max_gap)
-            label_base  = args.baseline_label or base_dir.name
-            print(f'[{label_base}] {len(loops_base)} detected loops → {len(angles_base)} with GT rotation')
-            datasets.append((label_base, angles_base))
-
-    # ---- print breakdown ----
+    # Print breakdown per dataset
     bin_edges = np.linspace(0, args.max_angle, args.bins + 1)
-    for label, angles in datasets:
+    for label, angles in all_data:
         counts, _ = np.histogram(angles, bins=bin_edges)
         total = len(angles)
         print(f'\n{label} GT rotation distribution:')
@@ -209,13 +243,18 @@ def main() -> None:
             pct = 100 * counts[i] / total if total > 0 else 0.0
             print(f'  {bin_edges[i]:5.1f}-{bin_edges[i+1]:5.1f}°: {counts[i]:4d}  ({pct:.1f}%)')
 
-    # ---- plot ----
+    # Plot — variants as solid step histograms, baselines as dashed
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
     fig, ax = plt.subplots()
 
-    for i, (label, angles) in enumerate(datasets):
-        ax.hist(angles, bins=bin_edges, color=ROBOT_COLORS[i % len(ROBOT_COLORS)],
-                alpha=0.7, label=label)
+    for i, (label, angles) in enumerate(variant_data):
+        ax.hist(angles, bins=bin_edges, histtype='step', linewidth=1.2,
+                color=ROBOT_COLORS[i % len(ROBOT_COLORS)], label=label)
+
+    for i, (label, angles) in enumerate(baseline_data):
+        ax.hist(angles, bins=bin_edges, histtype='step', linewidth=1.2,
+                linestyle='--', color=ROBOT_COLORS[(len(variant_data) + i) % len(ROBOT_COLORS)],
+                label=label)
 
     ax.set_xlabel('GT Relative Rotation Angle (°)')
     ax.set_ylabel('Number of Detected Loops')
@@ -223,8 +262,7 @@ def main() -> None:
     ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
 
-    out_path = exp_dir / 'loop_rotation_dist'
-    save_fig(fig, out_path)
+    save_fig(fig, exp_dir / 'loop_rotation_dist')
     plt.close(fig)
 
 
