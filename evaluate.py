@@ -5,6 +5,8 @@ import sys
 import subprocess
 import argparse
 import tempfile
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -28,14 +30,12 @@ def collect_loop_closure_lines(pairs, rotation, translation, scale):
     Returns a list of (aligned_pos1, aligned_pos2) numpy arrays (shape (3,)).
     Silently skips if the distributed CSV files are not present.
     """
-    from pathlib import Path as _Path
-
     # Build robot_id → (timestamps, raw_positions) from the TUM files in pairs.
     robot_trajs = {}   # {robot_id: (ts_array, pos_array)}
     robot_kf_maps = {} # {robot_id: {keyframe_id: ts_s}}
 
     for p in pairs:
-        robot_path = _Path(p['robot_path'])
+        robot_path = Path(p['robot_path'])
         try:
             robot_id = int(robot_path.stem.split()[-1])
         except ValueError:
@@ -54,7 +54,7 @@ def collect_loop_closure_lines(pairs, rotation, translation, scale):
     seen = set()
     all_loops = []
     for p in pairs:
-        robot_path = _Path(p['robot_path'])
+        robot_path = Path(p['robot_path'])
         lc_path = robot_path.parent.parent / 'distributed' / 'loop_closures.csv'
         if not lc_path.exists():
             continue
@@ -223,37 +223,33 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
     plt.close()
 
 
-def find_trajectory_pairs(experiment_folder, gt_folder=None):
+def find_trajectory_pairs(experiment_folder, gt_folder=None, gt_exp_name=None):
     """
-    Recursively finds 'Robot *.tum' files and their corresponding 'gt.txt'.
+    Recursively finds 'Robot *.tum' files and their corresponding GT files.
 
-    If gt_folder is provided, ground truth files are looked up under:
-        gt_folder/<experiment_name>/<relative_subpath>/gt.txt
-    where <experiment_name> is the basename of experiment_folder and
-    <relative_subpath> is the path of the containing directory relative to
-    experiment_folder.  Otherwise gt.txt is expected in the same directory as
-    the robot file (legacy behaviour).
+    gt_exp_name overrides the subfolder name used when looking up GT files
+    under gt_folder.  Defaults to the basename of experiment_folder, which
+    is correct for top-level experiments.  Pass the parent experiment name
+    when evaluating a variant subfolder (e.g. 'campus' for 'campus/all/').
 
     Returns a list of dicts with keys: robot_path, gt_path, timestamp.
     """
     pairs = []
-    experiment_name = os.path.basename(experiment_folder)
+    if gt_exp_name is None:
+        gt_exp_name = os.path.basename(experiment_folder)
 
-    # Walk through the directory structure
     for root, dirs, files in os.walk(experiment_folder):
         for file in files:
             if file.startswith("Robot ") and file.endswith(".tum"):
                 robot_path = os.path.join(root, file)
 
                 if gt_folder is not None:
-                    # The GT filename is <first_subdir>.txt (or .csv) under gt_folder/<experiment_name>/
-                    # e.g. experiment_folder/a5/dpgo/Robot 0.tum -> gt_folder/a5678/a5.txt
                     rel_subpath = os.path.relpath(root, experiment_folder)
                     first_subdir = rel_subpath.split(os.sep)[0] if rel_subpath != '.' else ''
                     stem = first_subdir if first_subdir else "gt"
-                    gt_path = os.path.join(gt_folder, experiment_name, stem + ".txt")
+                    gt_path = os.path.join(gt_folder, gt_exp_name, stem + ".txt")
                     if not os.path.exists(gt_path):
-                        csv_candidate = os.path.join(gt_folder, experiment_name, stem + ".csv")
+                        csv_candidate = os.path.join(gt_folder, gt_exp_name, stem + ".csv")
                         if os.path.exists(csv_candidate):
                             gt_path = csv_candidate
                 else:
@@ -264,7 +260,6 @@ def find_trajectory_pairs(experiment_folder, gt_folder=None):
                             gt_path = csv_candidate
 
                 if os.path.exists(gt_path):
-                    # Read the first timestamp from the robot file for sorting
                     try:
                         with open(robot_path, 'r') as f:
                             for line in f:
@@ -283,92 +278,54 @@ def find_trajectory_pairs(experiment_folder, gt_folder=None):
                 else:
                     print(f"Warning: No gt.txt/.csv found for {robot_path} (looked in {gt_path})")
 
-    # Sort pairs by timestamp
     pairs.sort(key=lambda x: x['timestamp'])
     return pairs
 
-def main():
-    parser = argparse.ArgumentParser(description="Combine TUM trajectories and run evo ATE evaluation.")
-    parser.add_argument("experiment_folder", help="Path to the experiment folder")
-    parser.add_argument(
-        "--gt_folder",
-        default="ground_truth",
-        help=(
-            "Root folder containing ground truth data. Ground truth files are "
-            "expected under <gt_folder>/<experiment_name>/[subpath]/gt.txt, where "
-            "<experiment_name> matches the basename of experiment_folder. "
-            "If omitted, gt.txt is looked up in the same directory as each robot file."
-        ),
-    )
-    parser.add_argument(
-        "--tf_file",
-        default=None,
-        help=(
-            "Path to a file specifying the SE3 transform from the ground truth frame "
-            "to the robot frame. Supported formats: JSON/YAML with a 'matrix' key (4x4) "
-            "or 'rotation' (3x3) + 'translation' (3,) keys; or a plain-text 4x4 matrix. "
-            "When provided, this transform is applied to the GT trajectory before plotting."
-        ),
-    )
 
-    args = parser.parse_args()
-    
-    experiment_folder = os.path.abspath(args.experiment_folder)
-    
-    if not os.path.exists(experiment_folder):
-        print(f"Error: Folder {experiment_folder} does not exist.")
-        sys.exit(1)
-        
-    gt_folder = os.path.abspath(args.gt_folder) if args.gt_folder else None
-    if gt_folder:
-        print(f"Ground truth root: {gt_folder}")
-        print(f"  -> using subfolder: {os.path.join(gt_folder, os.path.basename(experiment_folder))}")
+def _is_robot_dir(d: Path) -> bool:
+    return (d / 'distributed').is_dir() or (d / 'dpgo').is_dir()
 
-    print(f"Searching for trajectories in {experiment_folder}...")
-    pairs = find_trajectory_pairs(experiment_folder, gt_folder=gt_folder)
-    
+
+def discover_variants(exp_dir: Path) -> list[Path]:
+    """Return subdirs of exp_dir that contain robot subdirs."""
+    variants = []
+    for d in sorted(exp_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        if any(_is_robot_dir(sub) for sub in d.iterdir() if sub.is_dir()):
+            variants.append(d)
+    return variants
+
+
+def run_evaluation(variant_dir: str, gt_folder, gt_exp_name: str, tf_file):
+    """Run ATE/RPE + trajectory plot for a single experiment or variant dir."""
+    print(f"\n{'='*50}")
+    print(f"Evaluating: {variant_dir}")
+    print(f"{'='*50}")
+
+    pairs = find_trajectory_pairs(variant_dir, gt_folder=gt_folder, gt_exp_name=gt_exp_name)
     if not pairs:
         print("No valid Robot *.tum and gt.txt pairs found.")
-        sys.exit(1)
-        
+        return
+
     print(f"Found {len(pairs)} trajectory segments.")
     for p in pairs:
         print(f"  - {p['robot_path']} (t={p['timestamp']})")
-        
-    # Create temporary file for combined trajectories
+
     with tempfile.TemporaryDirectory() as temp_dir:
         combined_est_path = os.path.join(temp_dir, "combined_est.tum")
-        combined_gt_path = os.path.join(temp_dir, "combined_gt.tum")
-        
+        combined_gt_path  = os.path.join(temp_dir, "combined_gt.tum")
+
         print("\nCombining trajectories...")
-        
-        # Combine Robot trajectories
+
         with open(combined_est_path, 'w') as outfile:
             for p in pairs:
                 with open(p['robot_path'], 'r') as infile:
                     outfile.write(infile.read())
-                    # Ensure newline between files if missing
-                    if outfile.tell() > 0: # Check if we wrote anything
-                         infile.seek(0, os.SEEK_END)
-                         if infile.tell() > 0: # Check if input file was not empty
-                             pass # We might want to ensure a newline, usually files strictly following TUM format have a newline, but let's be safe.
-                             # Actually plain read/write is safer to avoid adding extra lines if not needed, 
-                             # but let's just assume files are well formed or we concatenate directly. 
-                             # Safest is just concatenation.
-        
-        # Combine GT trajectories
-        # Note: We need to combine GTs in the same order as Robots to match the time segments roughly, 
-        # BUT evo matches by timestamp, so order in file doesn't strictly matter as long as timestamps are unique.
-        # However, duplicates might be an issue if GTs overlap. Input GTs likely don't overlap if robots don't.
-        # Wait, the user said "find the 'Robot <id>.tum' files... ground truth files are named 'gt.txt' under the same folder"
-        # Since timestamps are global (unix time likely), simple concatenation works for evo.
-        
+
         with open(combined_gt_path, 'w') as outfile:
             for p in pairs:
                 if os.path.splitext(p['gt_path'])[1].lower() == '.csv':
-                    # Convert CSV to TUM space-delimited format for evo.
-                    # CSV columns: timestamp_ns, x, y, z, qw, qx, qy, qz
-                    # TUM columns: timestamp_s,  x, y, z, qx, qy, qz, qw
                     with open(p['gt_path'], 'r') as infile:
                         for line in infile:
                             line = line.strip()
@@ -379,7 +336,7 @@ def main():
                                 try:
                                     ts_s = float(parts[0]) / 1e9
                                 except ValueError:
-                                    continue  # skip non-numeric header rows
+                                    continue
                                 x, y, z = parts[1], parts[2], parts[3]
                                 qw, qx, qy, qz = parts[4], parts[5], parts[6], parts[7]
                                 outfile.write(f'{ts_s:.9f} {x} {y} {z} {qx} {qy} {qz} {qw}\n')
@@ -387,81 +344,117 @@ def main():
                     with open(p['gt_path'], 'r') as infile:
                         outfile.write(infile.read())
 
-        print("Running evo ape...")
-        
-        cmd = ["evo_ape", "tum", combined_gt_path, combined_est_path, "-va"]
-        cmd.append("--align")
-        cmd.extend(["--plot_mode", "xy", "--save_plot", experiment_folder + "/evo.pdf"])
-        cmd.extend(["--save_results", experiment_folder + "/evo_ape.zip"])
+        # evo_ape
+        print("\nRunning evo ape...")
+        ape_zip  = os.path.join(variant_dir, "evo_ape.zip")
+        ape_plot = os.path.join(variant_dir, "evo.pdf")
+        for f in [ape_zip, ape_plot]:
+            if os.path.exists(f):
+                os.remove(f)
 
-        # if evo.pdf exists, remove it
-        if os.path.exists(experiment_folder + "/evo.pdf"):
-            os.remove(experiment_folder + "/evo.pdf")
-
-        # if evo.zip exists, remove it
-        if os.path.exists(experiment_folder + "/evo_ape.zip"):
-            os.remove(experiment_folder + "/evo_ape.zip")
-
-            
+        cmd = ["evo_ape", "tum", combined_gt_path, combined_est_path, "-va",
+               "--align", "--plot_mode", "xy",
+               "--save_plot", ape_plot, "--save_results", ape_zip]
         print(f"Command: {' '.join(cmd)}")
-        
         try:
-            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            print("\n" + "="*40)
-            print("EVO APE RESULTS")
-            print("="*40)
+            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+            print("\n" + "="*40 + "\nEVO APE RESULTS\n" + "="*40)
             print(result.stdout)
             print("="*40)
         except subprocess.CalledProcessError as e:
             print("\nError running evo_ape:")
             print(e.stderr)
             print(e.stdout)
-            sys.exit(e.returncode)
+            return
         except FileNotFoundError:
-             print("\nError: 'evo_ape' command not found. Please ensure evo is installed and in your PATH.")
-             sys.exit(1)
+            print("\nError: 'evo_ape' not found.")
+            return
 
-        # Run evo_rpe with delta 100 meters
+        # evo_rpe
         print("\nRunning evo rpe...")
-        
-        rpe_cmd = ["evo_rpe", "tum", combined_gt_path, combined_est_path, "-va"]
-        rpe_cmd.append("--align")
-        rpe_cmd.extend(["--delta", "5", "--delta_unit", "m"])
-        rpe_cmd.extend(["--plot_mode", "xy", "--save_plot", experiment_folder + "/evo_rpe.pdf"])
-        rpe_cmd.extend(["--save_results", experiment_folder + "/evo_rpe.zip"])
+        rpe_zip  = os.path.join(variant_dir, "evo_rpe.zip")
+        rpe_plot = os.path.join(variant_dir, "evo_rpe.pdf")
+        for f in [rpe_zip, rpe_plot]:
+            if os.path.exists(f):
+                os.remove(f)
 
-        # if evo_rpe.pdf exists, remove it
-        if os.path.exists(experiment_folder + "/evo_rpe.pdf"):
-            os.remove(experiment_folder + "/evo_rpe.pdf")
-
-        # if evo_rpe.zip exists, remove it
-        if os.path.exists(experiment_folder + "/evo_rpe.zip"):
-            os.remove(experiment_folder + "/evo_rpe.zip")
-
+        rpe_cmd = ["evo_rpe", "tum", combined_gt_path, combined_est_path, "-va",
+                   "--align", "--delta", "5", "--delta_unit", "m",
+                   "--plot_mode", "xy",
+                   "--save_plot", rpe_plot, "--save_results", rpe_zip]
         print(f"Command: {' '.join(rpe_cmd)}")
-        
         try:
-            result = subprocess.run(rpe_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            print("\n" + "="*40)
-            print("EVO RPE RESULTS")
-            print("="*40)
+            result = subprocess.run(rpe_cmd, check=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+            print("\n" + "="*40 + "\nEVO RPE RESULTS\n" + "="*40)
             print(result.stdout)
             print("="*40)
         except subprocess.CalledProcessError as e:
             print("\nError running evo_rpe:")
             print(e.stderr)
             print(e.stdout)
-            sys.exit(e.returncode)
+            return
         except FileNotFoundError:
-             print("\nError: 'evo_rpe' command not found. Please ensure evo is installed and in your PATH.")
-             sys.exit(1)
+            print("\nError: 'evo_rpe' not found.")
+            return
 
-        # Plot aligned trajectories
+        # Trajectory plot
         print("\nPlotting aligned trajectories...")
-        tf_gt_robot = load_frame_transform(args.tf_file)
-        if args.tf_file:
-            print(f"Applying GT→robot transform from: {args.tf_file}")
-        plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=tf_gt_robot)
+        tf_gt_robot = load_frame_transform(tf_file)
+        if tf_file:
+            print(f"Applying GT→robot transform from: {tf_file}")
+        plot_aligned_trajectories(variant_dir, pairs, tf_gt_robot=tf_gt_robot)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Combine TUM trajectories and run evo ATE evaluation."
+    )
+    parser.add_argument("experiment_folder", help="Path to the experiment folder")
+    parser.add_argument(
+        "--gt_folder", default="ground_truth",
+        help=(
+            "Root folder containing ground truth data. GT files are expected under "
+            "<gt_folder>/<experiment_name>/<robot>.txt. Defaults to 'ground_truth'."
+        ),
+    )
+    parser.add_argument(
+        "--tf_file", default=None,
+        help=(
+            "Path to a file specifying the SE3 transform from the GT frame to the "
+            "robot frame (JSON/YAML with 'matrix' key, or plain-text 4x4 matrix)."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    experiment_folder = os.path.abspath(args.experiment_folder)
+    if not os.path.exists(experiment_folder):
+        print(f"Error: Folder {experiment_folder} does not exist.")
+        sys.exit(1)
+
+    gt_folder = os.path.abspath(args.gt_folder) if args.gt_folder else None
+
+    exp_dir = Path(experiment_folder)
+    variants = discover_variants(exp_dir)
+
+    if variants:
+        print(f"Found {len(variants)} variant(s): {[v.name for v in variants]}")
+        # GT is keyed by the parent experiment name (e.g. 'campus'), not the variant name
+        gt_exp_name = exp_dir.name
+        if gt_folder:
+            print(f"Ground truth root: {gt_folder}")
+            print(f"  -> using subfolder: {os.path.join(gt_folder, gt_exp_name)}")
+        for v in variants:
+            run_evaluation(str(v), gt_folder, gt_exp_name, args.tf_file)
+    else:
+        gt_exp_name = exp_dir.name
+        if gt_folder:
+            print(f"Ground truth root: {gt_folder}")
+            print(f"  -> using subfolder: {os.path.join(gt_folder, gt_exp_name)}")
+        run_evaluation(experiment_folder, gt_folder, gt_exp_name, args.tf_file)
+
 
 if __name__ == "__main__":
     main()
