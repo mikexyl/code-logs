@@ -191,24 +191,44 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
     plt.close(fig)
 
 
-def group_recall_files(folder: Path) -> list[Path]:
-    """Return all loops_recall.csv files for this experiment.
+def _is_robot_dir(d: Path) -> bool:
+    return (d / "distributed").is_dir() or (d / "dpgo").is_dir()
 
-    Looks in:
-      <folder>/loops_recall.csv            (main experiment)
-      baselines/<folder.name>/*/loops_recall.csv  (one per baseline method)
+
+def group_recall_files(folder: Path) -> tuple[list[Path], list[Path]]:
+    """Return (variant_paths, baseline_paths) of loops_recall.csv files.
+
+    Variant paths: one per variant subfolder (subdir containing robot dirs),
+    or the top-level <folder>/loops_recall.csv if no variant subfolders exist.
+    Baseline paths: baselines/<folder.name>/*/loops_recall.csv.
     """
-    paths: list[Path] = []
-    main = folder / "loops_recall.csv"
-    if main.exists():
-        paths.append(main)
+    variant_paths: list[Path] = []
+
+    # Check for variant subfolders
+    variant_dirs = [
+        d for d in sorted(folder.iterdir())
+        if d.is_dir() and any(_is_robot_dir(sub) for sub in d.iterdir() if sub.is_dir())
+    ]
+    if variant_dirs:
+        for d in variant_dirs:
+            p = d / "loops_recall.csv"
+            if p.exists():
+                variant_paths.append(p)
+    else:
+        # Fallback: single top-level CSV
+        main = folder / "loops_recall.csv"
+        if main.exists():
+            variant_paths.append(main)
+
+    baseline_paths: list[Path] = []
     baseline_dir = folder.parent / "baselines" / folder.name
     if baseline_dir.exists():
         for method_dir in sorted(baseline_dir.iterdir()):
             p = method_dir / "loops_recall.csv"
             if p.exists():
-                paths.append(p)
-    return paths
+                baseline_paths.append(p)
+
+    return variant_paths, baseline_paths
 
 
 def _load_recall(path: Path) -> dict | None:
@@ -237,24 +257,33 @@ def _load_recall(path: Path) -> dict | None:
             "recalls": recalls, "label": path.parent.name}
 
 
-def plot_recall_comparison(paths: list[Path], folder: Path) -> None:
-    """Line-curve recall per rotation bucket for each variant."""
-    datasets = [(p, _load_recall(p)) for p in paths]
-    datasets = [(p, d) for p, d in datasets if d is not None]
-    if not datasets:
+def plot_recall_comparison(variant_paths: list[Path], baseline_paths: list[Path],
+                           folder: Path) -> None:
+    """Line-curve recall per rotation bucket. Baselines shown as dashed lines."""
+    variant_data  = [(p, _load_recall(p)) for p in variant_paths]
+    baseline_data = [(p, _load_recall(p)) for p in baseline_paths]
+    variant_data  = [(p, d) for p, d in variant_data  if d is not None]
+    baseline_data = [(p, d) for p, d in baseline_data if d is not None]
+
+    all_data = variant_data + baseline_data
+    if not all_data:
         print("  No parseable recall data — skipping.")
         return
 
-    bucket_keys = datasets[0][1]["bucket_keys"]
+    bucket_keys = all_data[0][1]["bucket_keys"]
     xs = [bmax for _, bmax in bucket_keys]
 
     plt.rcParams.update({**IEEE_RC, "figure.figsize": (3.5, 2.8)})
     fig, ax = plt.subplots()
 
-    for i, (p, d) in enumerate(datasets):
+    for i, (p, d) in enumerate(variant_data):
         color = COLORS[i % len(COLORS)]
-        label = "CoDE-SLAM" if d["label"] == folder.name else d["label"]
-        ax.plot(xs, d["recalls"], color=color, marker="o", markersize=3, label=label)
+        ax.plot(xs, d["recalls"], color=color, marker="o", markersize=3, label=d["label"])
+
+    for i, (p, d) in enumerate(baseline_data):
+        color = COLORS[(len(variant_data) + i) % len(COLORS)]
+        ax.plot(xs, d["recalls"], color=color, marker="o", markersize=3,
+                linestyle="--", label=d["label"])
 
     ax.set_xticks(xs)
     ax.set_xticklabels([f"{x}°" for x in xs])
@@ -306,13 +335,14 @@ def main() -> None:
         PLOTTERS[type_name](paths, folder)
 
     # Recall comparison (loops_recall.csv files)
-    recall_paths = group_recall_files(folder)
-    if len(recall_paths) >= 2:
-        print(f"\n[recall] {len(recall_paths)} variant(s):")
-        for p in recall_paths:
+    variant_recall, baseline_recall = group_recall_files(folder)
+    total_recall = len(variant_recall) + len(baseline_recall)
+    if total_recall >= 2:
+        print(f"\n[recall] {len(variant_recall)} variant(s), {len(baseline_recall)} baseline(s):")
+        for p in variant_recall + baseline_recall:
             print(f"  {p}")
-        plot_recall_comparison(recall_paths, folder)
-    elif recall_paths:
+        plot_recall_comparison(variant_recall, baseline_recall, folder)
+    elif total_recall == 1:
         print(f"\n[recall] only one variant found — skipping comparison plot")
 
 
