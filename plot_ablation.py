@@ -238,36 +238,30 @@ def _load_recall(path: Path) -> dict | None:
 
 
 def plot_recall_comparison(paths: list[Path], folder: Path) -> None:
-    """Grouped bar chart of per-bucket recall for each variant."""
+    """Line-curve recall per rotation bucket for each variant."""
     datasets = [(p, _load_recall(p)) for p in paths]
     datasets = [(p, d) for p, d in datasets if d is not None]
     if not datasets:
         print("  No parseable recall data — skipping.")
         return
 
-    # All datasets must share the same bucket structure
-    bucket_labels = datasets[0][1]["labels"]
-    n_buckets  = len(bucket_labels)
-    n_variants = len(datasets)
-    width = 0.8 / n_variants
+    bucket_keys = datasets[0][1]["bucket_keys"]
+    xs = [bmax for _, bmax in bucket_keys]
 
     plt.rcParams.update({**IEEE_RC, "figure.figsize": (3.5, 2.8)})
     fig, ax = plt.subplots()
 
     for i, (p, d) in enumerate(datasets):
-        color  = COLORS[i % len(COLORS)]
-        label  = "CoDE-SLAM" if d["label"] == folder.name else d["label"]
-        offset = (i - (n_variants - 1) / 2) * width
-        xs = [j + offset for j in range(n_buckets)]
-        ax.bar(xs, d["recalls"], width=width * 0.9, color=color,
-               alpha=0.85, label=label)
+        color = COLORS[i % len(COLORS)]
+        label = "CoDE-SLAM" if d["label"] == folder.name else d["label"]
+        ax.plot(xs, d["recalls"], color=color, marker="o", markersize=3, label=label)
 
-    ax.set_xticks(list(range(n_buckets)))
-    ax.set_xticklabels(bucket_labels, rotation=45, ha="right")
-    ax.set_xlabel("GT Rotation Bucket")
+    ax.set_xticks(xs)
+    ax.set_xticklabels([f"{x}°" for x in xs])
+    ax.set_xlabel("GT Rotation Bucket Upper Bound")
     ax.set_ylabel("Recall")
     ax.legend(loc="upper right")
-    ax.grid(True, axis="y", alpha=0.3, linestyle="--", linewidth=0.3)
+    ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
     plt.tight_layout()
 
     save_fig(fig, folder / "recall_comparison")

@@ -333,7 +333,7 @@ def main() -> None:
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
     fig, ax = plt.subplots()
 
-    bucket_labels  = [f'{bmin}-{bmax}°' for bmin, bmax in bucket_keys]
+    xs = [bmax for _, bmax in bucket_keys]
     bucket_recalls = []
     for bk in bucket_keys:
         pair_counts = bucket_recall[bk]
@@ -341,12 +341,11 @@ def main() -> None:
         total_gt  = sum(v[1] for v in pair_counts.values())
         bucket_recalls.append(total_det / total_gt if total_gt > 0 else 0.0)
 
-    xs = list(range(len(bucket_keys)))
-    ax.bar(xs, bucket_recalls, width=0.6, color='#4C72B0', alpha=0.85)
+    ax.plot(xs, bucket_recalls, color='#4C72B0', marker='o', markersize=3)
 
     ax.set_xticks(xs)
-    ax.set_xticklabels(bucket_labels, rotation=45, ha='right')
-    ax.set_xlabel('GT Rotation Bucket')
+    ax.set_xticklabels([f'{x}°' for x in xs])
+    ax.set_xlabel('GT Rotation Bucket Upper Bound')
     ax.set_ylabel('Recall')
     ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
