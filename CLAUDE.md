@@ -57,12 +57,12 @@ python3 evaluate_loops_recall.py <experiment_dir> ground_truth/<exp> \
 ```
 Auto-discovers variant sub-folders and `baselines/<exp>/*/` dirs. Evaluates each, saves per-variant `loops_recall.csv/txt`, and plots a `recall_comparison.pdf/png` across all variants and baselines (variants solid, baselines dashed).
 
-Also performs **outlier analysis**: for each detected loop that carries a relative pose estimate (`tx,ty,tz,qx,qy,qz,qw` in `loop_closures.csv`), the detected pose is compared against the GT relative pose at the loop timestamps. A loop is an outlier if translation error > `--trans-thr` or rotation error > `--rot-thr`. Saves `outlier_comparison.pdf/png`.
+Also performs **outlier analysis**: for each detected loop that carries a relative pose estimate (`tx,ty,tz,qx,qy,qz,qw` in `loop_closures.csv`), the detected pose is compared against the GT relative pose at the loop timestamps. A loop is an outlier if relative translation error > `--trans-thr` × GT distance OR rotation error > `--rot-thr`. Saves `outlier_comparison.pdf/png`.
 
 Key options:
 - `--tol`: timestamp matching tolerance in seconds (default 2.0; 5.0 gives substantially higher recall)
 - `--max-angle`: cap x-axis of the curve without re-running extraction
-- `--trans-thr`: translation error threshold for outlier detection in metres (default 5.0)
+- `--trans-thr`: relative translation error threshold as fraction of GT distance (default 2.0 = 200%)
 - `--rot-thr`: rotation error threshold for outlier detection in degrees (default 40.0)
 - `--max-gap`: max GT timestamp gap for outlier pose lookup in seconds (default 2.5)
 

@@ -70,6 +70,33 @@ def _load_loops(path: Path) -> dict | None:
     return None
 
 
+def _load_inlier_counts(folder: Path) -> dict[str, int]:
+    """Load inlier_counts.npy from folder (and baselines subfolder), keyed by variant name."""
+    counts: dict[str, int] = {}
+    for search_dir in [folder, folder.parent / "baselines" / folder.name]:
+        p = search_dir / "inlier_counts.npy"
+        if p.exists():
+            try:
+                counts.update(np.load(str(p), allow_pickle=True).item())
+            except Exception:
+                pass
+    return counts
+
+
+def _match_inlier_count(label: str, inlier_counts: dict[str, int]) -> int | None:
+    """Find inlier count for a npy label by substring match against variant dir names.
+
+    e.g. label="campus-all" matches key="all"; label="campus-ns-cs" matches key="ns-cs".
+    Selects the longest matching key to avoid ambiguity.
+    """
+    best_key = max(
+        (k for k in inlier_counts if k in label),
+        key=len,
+        default=None,
+    )
+    return inlier_counts[best_key] if best_key is not None else None
+
+
 def _load_bandwidth(path: Path) -> dict | None:
     """Load a bandwidth .npy file and normalise to {t_sec, total}.
     CBS (backend) bandwidth is excluded so all methods are comparable."""
@@ -143,12 +170,16 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
         return
     t_end = min(d["t_sec"][-1] for _, d in datasets)
 
+    # Load inlier counts (variant_name → n_inliers) from companion file
+    inlier_counts = _load_inlier_counts(folder)
+
     plt.rcParams.update(IEEE_RC)
     fig, (ax_counts, ax_ratio) = plt.subplots(
         2, 1, sharex=True, figsize=(3.5, 3.5),
     )
     fig.subplots_adjust(hspace=0.08)
 
+    any_inlier = False
     for i, (p, d) in enumerate(datasets):
         t_sec = d["t_sec"]
         mask  = t_sec <= t_end
@@ -168,13 +199,32 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
         mark_endpoint(ax_counts, t_m, gv,    color, fmt="{:.0f}")
         mark_endpoint(ax_ratio,  t_m, ratio, color, fmt="{:.2f}")
 
+        # Inlier/PR curve: (inlier_count / gv_final) * gv/pr = inlier/pr
+        n_inlier = _match_inlier_count(label, inlier_counts)
+        if n_inlier is not None:
+            gv_final = float(gv[-1]) if gv[-1] > 0 else 1.0
+            inlier_rate = n_inlier / gv_final
+            with np.errstate(invalid="ignore", divide="ignore"):
+                inlier_pr = np.where(pr > 0, inlier_rate * gv / pr, 0.0)
+            ax_ratio.plot(t_m, inlier_pr, color=color, linestyle="--",
+                          linewidth=0.8, alpha=0.7, label="_nolegend_")
+            mark_endpoint(ax_ratio, t_m, inlier_pr, color, fmt="{:.2f}")
+            any_inlier = True
+
     ax_counts.set_ylabel("Count")
     ax_counts.legend(loc="upper left")
     ax_counts.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
 
     ax_ratio.set_xlabel("Time (s)")
     ax_ratio.set_ylabel("GV / PR Ratio")
-    ax_ratio.legend(loc="upper left")
+    if any_inlier:
+        import matplotlib.lines as mlines
+        handles, labels = ax_ratio.get_legend_handles_labels()
+        handles.append(mlines.Line2D([], [], color='gray', linestyle='--', linewidth=0.8))
+        labels.append('inlier/PR')
+        ax_ratio.legend(handles, labels, loc="upper left")
+    else:
+        ax_ratio.legend(loc="upper left")
     ax_ratio.grid(True, alpha=0.3, linestyle="--", linewidth=0.3)
 
     plt.tight_layout()

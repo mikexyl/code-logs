@@ -35,6 +35,7 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 import yaml
 
 from utils.io import load_keyframes_csv, load_loop_closures_csv, load_gt_trajectory
@@ -86,7 +87,8 @@ def load_detected_loops(exp_dir: Path, id_to_name: dict[int, str]) -> list[dict]
     """
     Load all unique inter-robot loop closures, resolved to timestamps (s).
 
-    Returns a list of dicts: {name1, t1_s, name2, t2_s}.
+    Returns a list of dicts: {idx, name1, t1_s, name2, t2_s, tx, ty, tz, qx, qy, qz, qw}.
+    Pose fields (tx…qw) are None if not present in the CSV.
     """
     # Build robot_id → keyframe_id → timestamp_s
     kf_maps: dict[int, dict[int, float]] = {}
@@ -120,7 +122,10 @@ def load_detected_loops(exp_dir: Path, id_to_name: dict[int, str]) -> list[dict]
             n2 = id_to_name.get(r2)
             if n1 is None or n2 is None:
                 continue
-            loops.append({'name1': n1, 't1_s': t1, 'name2': n2, 't2_s': t2})
+            entry: dict = {'idx': len(loops), 'name1': n1, 't1_s': t1, 'name2': n2, 't2_s': t2}
+            for k in ('tx', 'ty', 'tz', 'qx', 'qy', 'qz', 'qw'):
+                entry[k] = lc.get(k)
+            loops.append(entry)
 
     return loops
 
@@ -190,7 +195,8 @@ def compute_recall(
     detected: list[dict],
     gt_loops: list[dict],
     tol_s: float,
-) -> dict[tuple[str, str], tuple[int, int]]:
+    inlier_indices: set[int] | None = None,
+) -> dict[tuple[str, str], tuple[int, int, int]]:
     """
     Compute per robot-pair recall against a GT loop list.
 
@@ -198,17 +204,18 @@ def compute_recall(
     and has both pose timestamps within tol_s of the GT pose timestamps
     (either orientation).
 
-    Returns {(name_a, name_b): (n_detected, n_total)} with sorted name pairs.
+    Returns {(name_a, name_b): (n_detected, n_total, n_inlier_detected)} with sorted name pairs.
+    n_inlier_detected counts GT loops whose matching detected loop is in inlier_indices.
+    If inlier_indices is None, n_inlier_detected is always 0.
     """
-    # Index detected loops by sorted robot-pair for fast lookup
-    det_by_pair: dict[tuple[str, str], list[tuple[float, float]]] = {}
+    # Index detected loops by sorted robot-pair for fast lookup, tracking idx
+    det_by_pair: dict[tuple[str, str], list[tuple[float, float, int]]] = {}
     for lc in detected:
         key = (min(lc['name1'], lc['name2']), max(lc['name1'], lc['name2']))
-        # store as (t_for_min_robot, t_for_max_robot)
         if lc['name1'] <= lc['name2']:
-            det_by_pair.setdefault(key, []).append((lc['t1_s'], lc['t2_s']))
+            det_by_pair.setdefault(key, []).append((lc['t1_s'], lc['t2_s'], lc['idx']))
         else:
-            det_by_pair.setdefault(key, []).append((lc['t2_s'], lc['t1_s']))
+            det_by_pair.setdefault(key, []).append((lc['t2_s'], lc['t1_s'], lc['idx']))
 
     pair_counts: dict[tuple[str, str], list[int]] = {}
     for gt in gt_loops:
@@ -216,7 +223,7 @@ def compute_recall(
         rj, tj = gt['robot_j'], gt['t_j_s']
         pair_key = (min(ri, rj), max(ri, rj))
         if pair_key not in pair_counts:
-            pair_counts[pair_key] = [0, 0]
+            pair_counts[pair_key] = [0, 0, 0]
         pair_counts[pair_key][1] += 1
 
         # Normalise GT timestamps to sorted order
@@ -226,14 +233,14 @@ def compute_recall(
             gt_ta, gt_tb = tj, ti
 
         candidates = det_by_pair.get(pair_key, [])
-        matched = any(
-            abs(ta - gt_ta) <= tol_s and abs(tb - gt_tb) <= tol_s
-            for ta, tb in candidates
-        )
-        if matched:
-            pair_counts[pair_key][0] += 1
+        for ta, tb, det_idx in candidates:
+            if abs(ta - gt_ta) <= tol_s and abs(tb - gt_tb) <= tol_s:
+                pair_counts[pair_key][0] += 1
+                if inlier_indices is not None and det_idx in inlier_indices:
+                    pair_counts[pair_key][2] += 1
+                break
 
-    return {k: (v[0], v[1]) for k, v in pair_counts.items()}
+    return {k: (v[0], v[1], v[2]) for k, v in pair_counts.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -285,10 +292,15 @@ def evaluate_one(
     buckets: dict[tuple[int, int], list[dict]],
     bucket_keys: list[tuple[int, int]],
     tol_s: float,
+    gt_poses: dict[str, tuple] | None = None,
+    max_gap_s: float = 2.5,
+    trans_thr: float = 2.0,
+    rot_thr: float = 40.0,
 ) -> dict | None:
     """Evaluate recall for one variant dir. Saves CSV/txt.
 
-    Returns {label, xs, recalls} for plotting, or None on failure.
+    Returns {label, xs, recalls, inlier_recalls, inlier_pr} for plotting, or None on failure.
+    inlier_recalls and inlier_pr are only present when gt_poses is provided and loops have poses.
     """
     id_to_name = discover_robots(variant_dir)
     if not id_to_name:
@@ -297,17 +309,25 @@ def evaluate_one(
     print(f'Robots: { {v: k for k, v in id_to_name.items()} }')
 
     detected = load_detected_loops(variant_dir, id_to_name)
-    print(f'Detected loops (unique, resolved): {len(detected)}')
+    n_detected = len(detected)
+    print(f'Detected loops (unique, resolved): {n_detected}')
+
+    # Tag inliers if GT poses available
+    inlier_set: set[int] | None = None
+    if gt_poses:
+        inlier_set = tag_inliers(detected, gt_poses, max_gap_s, trans_thr, rot_thr)
+        print(f'Inlier loops (pose quality): {len(inlier_set)}/{n_detected}')
 
     bucket_recall: dict[tuple[int, int], dict] = {}
     for bk in bucket_keys:
-        bucket_recall[bk] = compute_recall(detected, buckets[bk], tol_s)
+        bucket_recall[bk] = compute_recall(detected, buckets[bk], tol_s, inlier_set)
 
     # Stats + CSV
     stats_path = variant_dir / 'loops_recall.txt'
     csv_rows: list[dict] = []
     xs = [bmax for _, bmax in bucket_keys]
-    recalls = []
+    recalls: list[float] = []
+    inlier_recalls: list[float] = []
 
     with open(stats_path, 'w') as f:
         f.write(f'Loop Closure Recall — {variant_dir.name}\n')
@@ -316,22 +336,32 @@ def evaluate_one(
         for bk in bucket_keys:
             bmin, bmax = bk
             pair_counts = bucket_recall[bk]
-            total_det = sum(v[0] for v in pair_counts.values())
-            total_gt  = sum(v[1] for v in pair_counts.values())
-            overall   = total_det / total_gt if total_gt > 0 else float('nan')
+            total_det    = sum(v[0] for v in pair_counts.values())
+            total_gt     = sum(v[1] for v in pair_counts.values())
+            total_inlier = sum(v[2] for v in pair_counts.values())
+            overall      = total_det / total_gt if total_gt > 0 else float('nan')
+            inlier_rec   = total_inlier / total_gt if total_gt > 0 else float('nan')
             label = f'{bmin}-{bmax}°'
             f.write(f'bucket {label:8s}  overall recall: '
-                    f'{overall:.3f}  ({total_det}/{total_gt})\n')
+                    f'{overall:.3f}  ({total_det}/{total_gt})')
+            if inlier_set is not None:
+                f.write(f'  inlier recall: {inlier_rec:.3f}  ({total_inlier}/{total_gt})')
+            f.write('\n')
             print(f'bucket {label:8s}  overall recall: '
-                  f'{overall:.3f}  ({total_det}/{total_gt})')
+                  f'{overall:.3f}  ({total_det}/{total_gt})', end='')
+            if inlier_set is not None:
+                print(f'  inlier recall: {inlier_rec:.3f}  ({total_inlier}/{total_gt})', end='')
+            print()
             recalls.append(total_det / total_gt if total_gt > 0 else 0.0)
-            for (ra, rb), (nd, nt) in sorted(pair_counts.items()):
+            inlier_recalls.append(total_inlier / total_gt if total_gt > 0 else 0.0)
+            for (ra, rb), (nd, nt, ni) in sorted(pair_counts.items()):
                 r = nd / nt if nt > 0 else float('nan')
                 f.write(f'  {ra} <-> {rb}: {r:.3f}  ({nd}/{nt})\n')
                 csv_rows.append({
                     'bucket_min': bmin, 'bucket_max': bmax,
                     'pair': f'{ra}<->{rb}',
                     'n_detected': nd, 'n_total': nt,
+                    'n_inlier': ni,
                     'recall': f'{r:.4f}',
                 })
             f.write('\n')
@@ -341,23 +371,62 @@ def evaluate_one(
     csv_path = variant_dir / 'loops_recall.csv'
     with open(csv_path, 'w', newline='') as f:
         writer = csv.DictWriter(
-            f, fieldnames=['bucket_min', 'bucket_max', 'pair', 'n_detected', 'n_total', 'recall'])
+            f, fieldnames=['bucket_min', 'bucket_max', 'pair', 'n_detected', 'n_total',
+                           'n_inlier', 'recall'])
         writer.writeheader()
         writer.writerows(csv_rows)
     print(f'CSV   → {csv_path}')
 
-    return {'label': variant_dir.name, 'xs': xs, 'recalls': recalls}
+    result: dict = {'label': variant_dir.name, 'xs': xs, 'recalls': recalls,
+                    'n_detected': n_detected}
+    if inlier_set is not None:
+        result['inlier_recalls'] = inlier_recalls
+        result['inlier_pr'] = len(inlier_set) / max(n_detected, 1)
+        # Update inlier_counts.npy in the experiment folder so plot_ablation
+        # can draw an inlier/PR curve without re-running GT comparison.
+        # Keyed by variant dir name (e.g. "all", "ns-cs").
+        counts_path = variant_dir.parent / 'inlier_counts.npy'
+        try:
+            counts: dict = (np.load(str(counts_path), allow_pickle=True).item()
+                            if counts_path.exists() else {})
+            counts[variant_dir.name] = len(inlier_set)
+            np.save(str(counts_path), counts, allow_pickle=True)
+            print(f'Updated inlier_counts.npy: {variant_dir.name}={len(inlier_set)}')
+        except Exception as e:
+            print(f'  Warning: could not update inlier_counts.npy: {e}')
+    return result
 
 
 # ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
 
+def _plot_inlier_lines(ax, data: dict, color: str, is_baseline: bool) -> bool:
+    """Draw inlier_recalls line for one series.
+
+    Returns True if the line was drawn.
+    """
+    if 'inlier_recalls' not in data:
+        return False
+    ls = '-.' if is_baseline else '--'
+    ax.plot(data['xs'], data['inlier_recalls'], color=color, marker='o', markersize=2,
+            linestyle=ls, linewidth=0.8, alpha=0.7, label='_nolegend_')
+    return True
+
+
 def plot_single(data: dict, out_dir: Path) -> None:
     """Single-variant recall curve."""
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
     fig, ax = plt.subplots()
-    ax.plot(data['xs'], data['recalls'], color='#4C72B0', marker='o', markersize=3)
+    color = '#4C72B0'
+    ax.plot(data['xs'], data['recalls'], color=color, marker='o', markersize=3, label='recall')
+    drew_ir = _plot_inlier_lines(ax, data, color, is_baseline=False)
+    handles, labels = ax.get_legend_handles_labels()
+    if drew_ir:
+        handles.append(mlines.Line2D([], [], color='gray', linestyle='--', linewidth=0.8))
+        labels.append('inlier recall')
+    if len(handles) > 1:
+        ax.legend(handles, labels, loc='upper left', fontsize=6)
     ax.set_xticks(data['xs'])
     ax.set_xticklabels([f'{x}°' for x in data['xs']])
     ax.set_xlabel('GT Rotation Bucket Upper Bound')
@@ -370,22 +439,33 @@ def plot_single(data: dict, out_dir: Path) -> None:
 
 
 def plot_comparison(variants: list[dict], baselines: list[dict], out_dir: Path) -> None:
-    """Multi-variant recall comparison, with baselines shown as dashed lines."""
+    """Multi-variant recall comparison, with baselines shown as dashed lines.
+
+    For each series, also draws inlier recall (dashed/dash-dot) and inlier/PR (dotted)
+    if inlier data is available.
+    """
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
     fig, ax = plt.subplots()
+    any_inlier_recall = False
     for i, d in enumerate(variants):
         color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
         ax.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3, label=d['label'])
+        any_inlier_recall = _plot_inlier_lines(ax, d, color, is_baseline=False) or any_inlier_recall
     for i, d in enumerate(baselines):
         color = ROBOT_COLORS[(len(variants) + i) % len(ROBOT_COLORS)]
         ax.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3,
                 linestyle='--', label=d['label'])
+        any_inlier_recall = _plot_inlier_lines(ax, d, color, is_baseline=True) or any_inlier_recall
     xs = variants[0]['xs'] if variants else baselines[0]['xs']
     ax.set_xticks(xs)
     ax.set_xticklabels([f'{x}°' for x in xs])
     ax.set_xlabel('GT Rotation Bucket Upper Bound')
     ax.set_ylabel('Recall')
-    ax.legend(loc='upper right')
+    handles, labels = ax.get_legend_handles_labels()
+    if any_inlier_recall:
+        handles.append(mlines.Line2D([], [], color='gray', linestyle='--', linewidth=0.8))
+        labels.append('inlier recall')
+    ax.legend(handles, labels, loc='upper left', fontsize=6)
     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
     save_fig(fig, out_dir / 'recall_comparison')
@@ -431,6 +511,50 @@ def _quat_xyzw_to_rot(q: np.ndarray) -> np.ndarray:
 def _rot_angle_deg(R: np.ndarray) -> float:
     cos_val = float(np.clip((np.trace(R) - 1) / 2, -1.0, 1.0))
     return float(np.degrees(np.arccos(cos_val)))
+
+
+def tag_inliers(
+    detected: list[dict],
+    gt_poses: dict[str, tuple],
+    max_gap_s: float,
+    trans_thr: float,
+    rot_thr: float,
+) -> set[int]:
+    """Return indices (into detected) of loops whose relative pose estimate is accurate (inliers).
+
+    A loop is an inlier if pose fields are present AND:
+      - relative translation error <= trans_thr * GT distance
+      - AND rotation error <= rot_thr degrees
+    Loops without pose data are not included.
+    """
+    inliers: set[int] = set()
+    for lc in detected:
+        if not all(lc.get(k) is not None for k in ('tx', 'ty', 'tz', 'qx', 'qy', 'qz', 'qw')):
+            continue
+        n1, t1 = lc['name1'], lc['t1_s']
+        n2, t2 = lc['name2'], lc['t2_s']
+        if n1 not in gt_poses or n2 not in gt_poses:
+            continue
+        ts1, pos1, rot1 = gt_poses[n1]
+        ts2, pos2, rot2 = gt_poses[n2]
+        pose1 = _nearest_pose(t1, ts1, pos1, rot1, max_gap_s)
+        pose2 = _nearest_pose(t2, ts2, pos2, rot2, max_gap_s)
+        if pose1 is None or pose2 is None:
+            continue
+        p_gt1, r_gt1 = pose1
+        p_gt2, r_gt2 = pose2
+        R1 = _quat_xyzw_to_rot(r_gt1)
+        R2 = _quat_xyzw_to_rot(r_gt2)
+        p_rel_gt  = R1.T @ (p_gt2 - p_gt1)
+        R_rel_gt  = R1.T @ R2
+        p_det     = np.array([lc['tx'], lc['ty'], lc['tz']])
+        R_det     = _quat_xyzw_to_rot(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
+        gt_dist   = float(np.linalg.norm(p_rel_gt))
+        trans_err = float(np.linalg.norm(p_det - p_rel_gt))
+        rot_err   = _rot_angle_deg(R_det.T @ R_rel_gt)
+        if trans_err / max(gt_dist, 1e-3) <= trans_thr and rot_err <= rot_thr:
+            inliers.add(lc['idx'])
+    return inliers
 
 
 def compute_outlier_ratio(
@@ -630,20 +754,35 @@ def main() -> None:
     variant_results:  list[dict] = []
     baseline_results: list[dict] = []
 
+    # Load GT poses early so evaluate_one can tag inliers per-bucket
+    print('\nLoading GT poses for inlier tagging...')
+    all_eval_dirs_tmp = (eval_dirs_variant + eval_dirs_baseline) if not single_mode else [exp_dir]
+    all_robot_names: set[str] = set()
+    for d in all_eval_dirs_tmp:
+        all_robot_names.update(discover_robots(d).values())
+    gt_poses = _load_gt_poses(gt_dir, sorted(all_robot_names))
+    if not gt_poses:
+        print('  No GT pose files found — inlier lines will be omitted.')
+
+    eval_kwargs = dict(gt_poses=gt_poses or None,
+                       max_gap_s=args.max_gap,
+                       trans_thr=args.trans_thr,
+                       rot_thr=args.rot_thr)
+
     if single_mode:
-        r = evaluate_one(exp_dir, buckets, bucket_keys, args.tol)
+        r = evaluate_one(exp_dir, buckets, bucket_keys, args.tol, **eval_kwargs)
         if r:
             plot_single(r, exp_dir)
             variant_results.append(r)
     else:
         for v in eval_dirs_variant:
             print(f'\n--- {v.name} ---')
-            r = evaluate_one(v, buckets, bucket_keys, args.tol)
+            r = evaluate_one(v, buckets, bucket_keys, args.tol, **eval_kwargs)
             if r:
                 variant_results.append(r)
         for b in eval_dirs_baseline:
             print(f'\n--- {b.name} (baseline) ---')
-            r = evaluate_one(b, buckets, bucket_keys, args.tol)
+            r = evaluate_one(b, buckets, bucket_keys, args.tol, **eval_kwargs)
             if r:
                 baseline_results.append(r)
         all_results = variant_results + baseline_results
@@ -657,14 +796,6 @@ def main() -> None:
     # ------------------------------------------------------------------
     print(f'\n--- Outlier analysis (trans_thr={args.trans_thr*100:.0f}% GT dist, rot_thr={args.rot_thr}°) ---')
 
-    # Collect all robot names across variants + baselines to load GT poses
-    all_eval_dirs = (eval_dirs_variant + eval_dirs_baseline) if not single_mode else [exp_dir]
-    all_robot_names: set[str] = set()
-    for d in all_eval_dirs:
-        id_to_name = discover_robots(d)
-        all_robot_names.update(id_to_name.values())
-
-    gt_poses = _load_gt_poses(gt_dir, sorted(all_robot_names))
     if not gt_poses:
         print('  No GT pose files found — skipping outlier analysis.')
         return
