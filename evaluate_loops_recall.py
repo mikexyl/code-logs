@@ -294,7 +294,8 @@ def evaluate_one(
     tol_s: float,
     gt_poses: dict[str, tuple] | None = None,
     max_gap_s: float = 2.5,
-    trans_thr: float = 2.0,
+    trans_abs: float = 2.0,
+    trans_rel: float = 0.10,
     rot_thr: float = 40.0,
 ) -> dict | None:
     """Evaluate recall for one variant dir. Saves CSV/txt.
@@ -315,7 +316,7 @@ def evaluate_one(
     # Tag inliers if GT poses available
     inlier_set: set[int] | None = None
     if gt_poses:
-        inlier_set = tag_inliers(detected, gt_poses, max_gap_s, trans_thr, rot_thr)
+        inlier_set = tag_inliers(detected, gt_poses, max_gap_s, trans_abs, trans_rel, rot_thr)
         print(f'Inlier loops (pose quality): {len(inlier_set)}/{n_detected}')
 
     bucket_recall: dict[tuple[int, int], dict] = {}
@@ -528,13 +529,14 @@ def tag_inliers(
     detected: list[dict],
     gt_poses: dict[str, tuple],
     max_gap_s: float,
-    trans_thr: float,
+    trans_abs: float,
+    trans_rel: float,
     rot_thr: float,
 ) -> set[int]:
     """Return indices (into detected) of loops whose relative pose estimate is accurate (inliers).
 
     A loop is an inlier if pose fields are present AND:
-      - relative translation error <= trans_thr * GT distance
+      - translation error <= max(trans_abs, trans_rel * GT distance)
       - AND rotation error <= rot_thr degrees
     Loops without pose data are not included.
     """
@@ -563,7 +565,7 @@ def tag_inliers(
         gt_dist   = float(np.linalg.norm(p_rel_gt))
         trans_err = float(np.linalg.norm(p_det - p_rel_gt))
         rot_err   = _rot_angle_deg(R_det.T @ R_rel_gt)
-        if trans_err / max(gt_dist, 1e-3) <= trans_thr and rot_err <= rot_thr:
+        if trans_err <= max(trans_abs, trans_rel * gt_dist) and rot_err <= rot_thr:
             inliers.add(lc['idx'])
     return inliers
 
@@ -573,13 +575,14 @@ def compute_outlier_ratio(
     id_to_name: dict[int, str],
     gt_poses: dict[str, tuple],
     max_gap_s: float,
-    trans_thr: float,
+    trans_abs: float,
+    trans_rel: float,
     rot_thr: float,
 ) -> tuple[float, int] | None:
     """Compute outlier ratio for detected loops that carry a relative-pose estimate.
 
     A detected loop is an outlier if:
-      - relative translation error > trans_thr * GT distance  (e.g. 0.5 = 50%)
+      - translation error > max(trans_abs, trans_rel * GT distance)
       - OR rotation error > rot_thr degrees
 
     Returns (outlier_ratio, n_evaluated) or None if no evaluable loops found.
@@ -648,11 +651,8 @@ def compute_outlier_ratio(
             trans_err = float(np.linalg.norm(p_det - p_rel_gt))
             rot_err   = _rot_angle_deg(R_det.T @ R_rel_gt)
 
-            # Relative translation error as fraction of GT distance
-            rel_trans_err = trans_err / max(gt_dist, 1e-3)
-
             n_total += 1
-            if rel_trans_err > trans_thr or rot_err > rot_thr:
+            if trans_err > max(trans_abs, trans_rel * gt_dist) or rot_err > rot_thr:
                 n_outliers += 1
 
     if n_total == 0:
@@ -660,11 +660,155 @@ def compute_outlier_ratio(
     return n_outliers / n_total, n_total
 
 
+def collect_outlier_stats(
+    variant_dir: Path,
+    id_to_name: dict[int, str],
+    gt_poses: dict[str, tuple],
+    max_gap_s: float,
+    trans_abs: float,
+    trans_rel: float,
+    rot_thr: float,
+) -> list[dict]:
+    """Return per-loop dicts with gt_dist, gt_rot_deg, is_outlier for all evaluable loops."""
+    kf_maps: dict[int, dict[int, float]] = {}
+    for rid, rname in id_to_name.items():
+        kf_path = variant_dir / rname / 'distributed' / 'kimera_distributed_keyframes.csv'
+        if kf_path.exists():
+            kf_maps[rid] = load_keyframes_csv(str(kf_path))
+
+    seen: set[frozenset] = set()
+    records: list[dict] = []
+
+    for rid, rname in id_to_name.items():
+        lc_path = variant_dir / rname / 'distributed' / 'loop_closures.csv'
+        if not lc_path.exists():
+            continue
+        for lc in load_loop_closures_csv(str(lc_path)):
+            r1, p1 = lc['robot1'], lc['pose1']
+            r2, p2 = lc['robot2'], lc['pose2']
+            if r1 == r2:
+                continue
+            key: frozenset = frozenset([(r1, p1), (r2, p2)])
+            if key in seen:
+                continue
+            seen.add(key)
+
+            if not all(k in lc for k in ('tx', 'ty', 'tz', 'qx', 'qy', 'qz', 'qw')):
+                continue
+            if r1 not in kf_maps or r2 not in kf_maps:
+                continue
+            t1 = kf_maps[r1].get(p1)
+            t2 = kf_maps[r2].get(p2)
+            if t1 is None or t2 is None:
+                continue
+            n1 = id_to_name.get(r1)
+            n2 = id_to_name.get(r2)
+            if n1 not in gt_poses or n2 not in gt_poses:
+                continue
+
+            ts1, pos1, rot1 = gt_poses[n1]
+            ts2, pos2, rot2 = gt_poses[n2]
+            pose1 = _nearest_pose(t1, ts1, pos1, rot1, max_gap_s)
+            pose2 = _nearest_pose(t2, ts2, pos2, rot2, max_gap_s)
+            if pose1 is None or pose2 is None:
+                continue
+
+            p_gt1, r_gt1 = pose1
+            p_gt2, r_gt2 = pose2
+            R1 = _quat_xyzw_to_rot(r_gt1)
+            R2 = _quat_xyzw_to_rot(r_gt2)
+            p_rel_gt = R1.T @ (p_gt2 - p_gt1)
+            R_rel_gt = R1.T @ R2
+
+            p_det = np.array([lc['tx'], lc['ty'], lc['tz']])
+            R_det = _quat_xyzw_to_rot(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
+
+            gt_dist    = float(np.linalg.norm(p_rel_gt))
+            gt_rot_deg = _rot_angle_deg(R_rel_gt)
+            trans_err  = float(np.linalg.norm(p_det - p_rel_gt))
+            rot_err    = _rot_angle_deg(R_det.T @ R_rel_gt)
+            is_outlier = trans_err > max(trans_abs, trans_rel * gt_dist) or rot_err > rot_thr
+
+            records.append({'gt_dist': gt_dist, 'gt_rot_deg': gt_rot_deg, 'is_outlier': is_outlier})
+
+    return records
+
+
+def _outlier_ratio_by_bin(
+    records: list[dict], key: str, edges: 'list[float] | list[int]'
+) -> tuple[list[float], list[float], list[int]]:
+    """Bin records by key, return (bin_centres, outlier_ratios, counts)."""
+    centres, ratios, counts = [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        subset = [r for r in records if lo <= r[key] < hi]
+        n = len(subset)
+        counts.append(n)
+        centres.append((lo + hi) / 2)
+        ratios.append(sum(r['is_outlier'] for r in subset) / n if n > 0 else float('nan'))
+    return centres, ratios, counts
+
+
+def plot_outlier_by_gt(
+    variant_stats: list[tuple[str, list[dict]]],
+    baseline_stats: list[tuple[str, list[dict]]],
+    out_dir: Path,
+) -> None:
+    """Two-panel plot: outlier ratio vs GT translation distance and vs GT rotation angle."""
+    dist_edges = [0, 5, 10, 15, 20, 25, 30, 40, 50, 70]
+    rot_edges  = [0, 10, 20, 30, 40, 50, 60, 75, 90, 120]
+
+    n_variants  = len(variant_stats)
+    n_baselines = len(baseline_stats)
+    all_series  = variant_stats + baseline_stats
+
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (7.0, 2.8)})
+    fig, axes = plt.subplots(1, 2)
+    ax_dist, ax_rot = axes[0], axes[1]
+
+    for i, (label, records) in enumerate(all_series):
+        is_bl = i >= n_variants
+        color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
+        ls = '--' if is_bl else '-'
+        lw = 0.8
+
+        centres, ratios, counts = _outlier_ratio_by_bin(records, 'gt_dist', dist_edges)
+        mask = [not np.isnan(r) for r in ratios]
+        ax_dist.plot(
+            [c for c, m in zip(centres, mask) if m],
+            [r for r, m in zip(ratios, mask) if m],
+            color=color, linestyle=ls, linewidth=lw, marker='o', markersize=2.5, label=label,
+        )
+
+        centres, ratios, _ = _outlier_ratio_by_bin(records, 'gt_rot_deg', rot_edges)
+        mask = [not np.isnan(r) for r in ratios]
+        ax_rot.plot(
+            [c for c, m in zip(centres, mask) if m],
+            [r for r, m in zip(ratios, mask) if m],
+            color=color, linestyle=ls, linewidth=lw, marker='o', markersize=2.5, label=label,
+        )
+
+    for ax, xlabel in [(ax_dist, 'GT translation distance (m)'),
+                       (ax_rot, 'GT relative rotation (°)')]:
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel('Outlier ratio')
+        ax.set_ylim(-0.05, 1.15)
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+
+    handles, labels_leg = ax_dist.get_legend_handles_labels()
+    ax_rot.legend(handles, labels_leg, fontsize=5, loc='upper left')
+
+    plt.tight_layout()
+    save_fig(fig, out_dir / 'outlier_by_gt')
+    plt.close(fig)
+    print(f'Outlier-by-GT plot → {out_dir}/outlier_by_gt.pdf')
+
+
 def plot_outlier_comparison(
     variant_data: list[tuple[str, float, int]],
     baseline_data: list[tuple[str, float, int]],
     out_dir: Path,
-    trans_thr: float,
+    trans_abs: float,
+    trans_rel: float,
     rot_thr: float,
 ) -> None:
     """Bar chart of outlier ratios. Variants solid, baselines hatched."""
@@ -696,7 +840,7 @@ def plot_outlier_comparison(
     ax.set_xticklabels(labels, rotation=30, ha='right', fontsize=6)
     ax.set_ylabel('Outlier Ratio')
     ax.set_ylim(0, 1.1)
-    ax.set_title(f'Loop Outlier Ratio (trans > {trans_thr*100:.0f}% GT dist or rot > {rot_thr:.0f}°)',
+    ax.set_title(f'Loop Outlier Ratio (trans > max({trans_abs:.1f}m, {trans_rel*100:.0f}% GT dist) or rot > {rot_thr:.0f}°)',
                  fontsize=7)
     ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
@@ -721,8 +865,10 @@ def main() -> None:
                         help='Timestamp tolerance in seconds (default: 2.0)')
     parser.add_argument('--max-angle', type=int, default=None, dest='max_angle',
                         help='Only evaluate angle thresholds up to this value in degrees')
-    parser.add_argument('--trans-thr', type=float, default=2.0, dest='trans_thr',
-                        help='Relative translation error threshold for outlier detection as fraction of GT distance (default: 2.0 = 200%%)')
+    parser.add_argument('--trans-abs', type=float, default=2.0, dest='trans_abs',
+                        help='Absolute translation error floor for inlier/outlier detection in metres (default: 2.0)')
+    parser.add_argument('--trans-rel', type=float, default=0.10, dest='trans_rel',
+                        help='Relative translation error threshold as fraction of GT distance (default: 0.10 = 10%%)')
     parser.add_argument('--rot-thr', type=float, default=40.0, dest='rot_thr',
                         help='Rotation error threshold for outlier detection in degrees (default: 40.0)')
     parser.add_argument('--max-gap', type=float, default=2.5, dest='max_gap',
@@ -777,7 +923,8 @@ def main() -> None:
 
     eval_kwargs = dict(gt_poses=gt_poses or None,
                        max_gap_s=args.max_gap,
-                       trans_thr=args.trans_thr,
+                       trans_abs=args.trans_abs,
+                       trans_rel=args.trans_rel,
                        rot_thr=args.rot_thr)
 
     if single_mode:
@@ -805,7 +952,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Outlier analysis: compare detected relative pose vs GT
     # ------------------------------------------------------------------
-    print(f'\n--- Outlier analysis (trans_thr={args.trans_thr*100:.0f}% GT dist, rot_thr={args.rot_thr}°) ---')
+    print(f'\n--- Outlier analysis (trans > max({args.trans_abs:.1f}m, {args.trans_rel*100:.0f}% GT dist), rot_thr={args.rot_thr}°) ---')
 
     if not gt_poses:
         print('  No GT pose files found — skipping outlier analysis.')
@@ -817,7 +964,7 @@ def main() -> None:
     for d in (eval_dirs_variant if not single_mode else [exp_dir]):
         id_to_name = discover_robots(d)
         result = compute_outlier_ratio(
-            d, id_to_name, gt_poses, args.max_gap, args.trans_thr, args.rot_thr)
+            d, id_to_name, gt_poses, args.max_gap, args.trans_abs, args.trans_rel, args.rot_thr)
         if result is None:
             print(f'  [{d.name}] No loops with pose data — skipping.')
         else:
@@ -828,7 +975,7 @@ def main() -> None:
     for d in eval_dirs_baseline:
         id_to_name = discover_robots(d)
         result = compute_outlier_ratio(
-            d, id_to_name, gt_poses, args.max_gap, args.trans_thr, args.rot_thr)
+            d, id_to_name, gt_poses, args.max_gap, args.trans_abs, args.trans_rel, args.rot_thr)
         if result is None:
             print(f'  [{d.name}] No loops with pose data — skipping.')
         else:
@@ -836,13 +983,36 @@ def main() -> None:
             print(f'  [{d.name}] outliers {ratio:.3f}  ({int(ratio*n)}/{n})')
             outlier_baseline.append((d.name, ratio, n))
 
+    out_plot_dir = exp_dir
     all_outlier = outlier_variant + outlier_baseline
     if len(all_outlier) >= 1:
-        out_plot_dir = exp_dir if not single_mode else exp_dir
         plot_outlier_comparison(outlier_variant, outlier_baseline, out_plot_dir,
-                                args.trans_thr, args.rot_thr)
+                                args.trans_abs, args.trans_rel, args.rot_thr)
     else:
         print('  No outlier data to plot.')
+
+    # Per-loop outlier stats broken down by GT translation and rotation
+    gt_stats_variant:  list[tuple[str, list[dict]]] = []
+    gt_stats_baseline: list[tuple[str, list[dict]]] = []
+
+    for d in (eval_dirs_variant if not single_mode else [exp_dir]):
+        id_to_name = discover_robots(d)
+        records = collect_outlier_stats(
+            d, id_to_name, gt_poses, args.max_gap, args.trans_abs, args.trans_rel, args.rot_thr)
+        if records:
+            gt_stats_variant.append((d.name, records))
+
+    for d in eval_dirs_baseline:
+        id_to_name = discover_robots(d)
+        records = collect_outlier_stats(
+            d, id_to_name, gt_poses, args.max_gap, args.trans_abs, args.trans_rel, args.rot_thr)
+        if records:
+            gt_stats_baseline.append((d.name, records))
+
+    if gt_stats_variant or gt_stats_baseline:
+        plot_outlier_by_gt(gt_stats_variant, gt_stats_baseline, out_plot_dir)
+    else:
+        print('  No per-loop data for GT-breakdown plot.')
 
 
 if __name__ == '__main__':
