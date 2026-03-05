@@ -195,8 +195,8 @@ def main() -> None:
                         help='Max timestamp gap for GT lookup in seconds (default: 2.5)')
     parser.add_argument('--max-angle', type=float, default=120.0, dest='max_angle',
                         help='Max angle for histogram x-axis in degrees (default: 120)')
-    parser.add_argument('--bins', type=int, default=12,
-                        help='Number of histogram bins (default: 12, i.e. 10° steps up to 120°)')
+    parser.add_argument('--bins', type=int, default=24,
+                        help='Number of histogram bins (default: 24, i.e. 5° steps up to 120°)')
     args = parser.parse_args()
 
     exp_dir = args.exp_dir.resolve()
@@ -243,23 +243,58 @@ def main() -> None:
             pct = 100 * counts[i] / total if total > 0 else 0.0
             print(f'  {bin_edges[i]:5.1f}-{bin_edges[i+1]:5.1f}°: {counts[i]:4d}  ({pct:.1f}%)')
 
-    # Plot — variants as solid step histograms, baselines as dashed
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
-    fig, ax = plt.subplots()
+    # Plot — one subplot per method, stacked vertically, shared x-axis
+    n_rows = len(all_data)
+    row_h  = 1.3
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, max(2.0, n_rows * row_h))})
+    fig, axes = plt.subplots(n_rows, 1, sharex=True,
+                             gridspec_kw={'hspace': 0.15})
+    if n_rows == 1:
+        axes = [axes]
 
-    for i, (label, angles) in enumerate(variant_data):
-        ax.hist(angles, bins=bin_edges, histtype='step', linewidth=1.2,
-                color=ROBOT_COLORS[i % len(ROBOT_COLORS)], label=label)
+    y_max = max(
+        (np.histogram(angles, bins=bin_edges)[0].max() if len(angles) > 0 else 1)
+        for _, angles in all_data
+    )
 
-    for i, (label, angles) in enumerate(baseline_data):
-        ax.hist(angles, bins=bin_edges, histtype='step', linewidth=1.2,
-                linestyle='--', color=ROBOT_COLORS[(len(variant_data) + i) % len(ROBOT_COLORS)],
-                label=label)
+    for i, (label, angles) in enumerate(all_data):
+        ax = axes[i]
+        is_baseline = i >= len(variant_data)
+        color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
 
-    ax.set_xlabel('GT Relative Rotation Angle (°)')
-    ax.set_ylabel('Number of Detected Loops')
-    ax.legend(loc='upper right')
-    ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
+        if len(angles) > 0:
+            counts, _ = np.histogram(angles, bins=bin_edges)
+            ax.bar(bin_edges[:-1], counts, width=np.diff(bin_edges),
+                   align='edge', color=color,
+                   edgecolor='black' if is_baseline else color,
+                   linewidth=0.4,
+                   alpha=0.85)
+        else:
+            counts = np.zeros(len(bin_edges) - 1, dtype=int)
+
+        # Method label inside panel
+        tag = f'{label}  (n={len(angles)})'
+        ax.text(0.98, 0.88, tag, transform=ax.transAxes,
+                ha='right', va='top', fontsize=5,
+                style='italic' if is_baseline else 'normal')
+
+        ax.set_ylim(0, y_max * 1.25)
+        ax.set_yticks([0, int(y_max)])
+        ax.yaxis.set_tick_params(labelsize=4.5)
+        ax.grid(True, axis='y', alpha=0.25, linestyle='--', linewidth=0.3)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    # Shared x-axis ticks and label
+    axes[-1].set_xlabel('GT Relative Rotation Angle (°)', fontsize=6)
+    tick_step = max(1, int((args.max_angle / 8) / 5) * 5)  # ~8 ticks, rounded to 5°
+    axes[-1].set_xticks(np.arange(0, args.max_angle + 1, tick_step))
+    axes[-1].xaxis.set_tick_params(labelsize=5)
+
+    # Shared y label centred on figure
+    fig.text(0.01, 0.5, 'Detected Loops', va='center', rotation='vertical', fontsize=6)
+
+    fig.suptitle(f'{exp_dir.name} — GT Rotation of Detected Loops', fontsize=7, y=1.01)
     plt.tight_layout()
 
     save_fig(fig, exp_dir / 'loop_rotation_dist')
