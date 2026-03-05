@@ -394,6 +394,17 @@ def evaluate_one(
             print(f'Updated inlier_counts.npy: {variant_dir.name}={len(inlier_set)}')
         except Exception as e:
             print(f'  Warning: could not update inlier_counts.npy: {e}')
+
+        # Save inlier loop pairs for downstream use (e.g. algebraic connectivity)
+        inlier_csv = variant_dir / 'inlier_loops.csv'
+        with open(inlier_csv, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['name1', 't1_s', 'name2', 't2_s'])
+            writer.writeheader()
+            for idx in sorted(inlier_set):
+                lc = detected[idx]
+                writer.writerow({'name1': lc['name1'], 't1_s': lc['t1_s'],
+                                 'name2': lc['name2'], 't2_s': lc['t2_s']})
+        print(f'Inlier loops → {inlier_csv}')
     return result
 
 
