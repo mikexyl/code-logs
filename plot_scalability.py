@@ -9,10 +9,12 @@ Y-axis: Number of verified inlier loop closures         [higher is better]
 Usage:
     python plot_scalability.py campus
     python plot_scalability.py gate
-    python plot_scalability.py campus --metric ac
+    python plot_scalability.py campus --bucket 20
+    python plot_scalability.py campus --inlier-recall
 """
 
 import argparse
+import csv
 from pathlib import Path
 
 import numpy as np
@@ -32,17 +34,25 @@ def _load_bandwidth_mb(npy_path: Path) -> float:
     return float(d['bow_MB'][-1]) + float(d['vlc_MB'][-1])
 
 
-def _count_inliers(inlier_csv: Path) -> int:
-    """Count inlier loops from inlier_loops.csv (lines minus header)."""
-    return sum(1 for _ in open(inlier_csv)) - 1
+def _load_recall(recall_csv: Path, bucket_max: int, inlier: bool) -> float | None:
+    """Return aggregate recall for the 0–bucket_max° rotation bucket.
 
-
-def _load_ac(ac_npy: Path, label: str) -> float | None:
-    """Load algebraic connectivity value saved by plot_algebraic_connectivity.py."""
-    if not ac_npy.exists():
+    If inlier=True, uses n_inlier / n_total (inlier recall).
+    Otherwise uses n_detected / n_total (overall recall).
+    Returns None if the CSV does not exist or bucket not found.
+    """
+    if not recall_csv.exists():
         return None
-    d = np.load(ac_npy, allow_pickle=True).item()
-    return float(d.get(label, float('nan')))
+    n_hit = 0
+    n_total = 0
+    with open(recall_csv) as f:
+        for row in csv.DictReader(f):
+            if int(row['bucket_min']) == 0 and int(row['bucket_max']) == bucket_max:
+                n_hit   += int(row['n_inlier']) if inlier else int(row['n_detected'])
+                n_total += int(row['n_total'])
+    if n_total == 0:
+        return None
+    return n_hit / n_total
 
 
 def _pareto_front(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -66,8 +76,10 @@ def main() -> None:
         description='Scalability / Pareto-front scatter: bandwidth vs inlier loops.'
     )
     parser.add_argument('folder', type=Path)
-    parser.add_argument('--metric', choices=['inliers', 'ac'], default='inliers',
-                        help='Y-axis metric: inlier loop count (default) or algebraic connectivity')
+    parser.add_argument('--bucket', type=int, default=10,
+                        help='GT rotation bucket max in degrees for recall (default: 10)')
+    parser.add_argument('--inlier-recall', action='store_true', dest='inlier_recall',
+                        help='Use inlier recall instead of overall recall on Y-axis')
     args = parser.parse_args()
 
     folder = args.folder.resolve()
@@ -83,39 +95,38 @@ def main() -> None:
 
     entries: list[dict] = []   # {label, bw_mb, metric_val, is_baseline}
 
-    def _add_entry(label: str, bw_npy: Path, inlier_csv: Path, is_baseline: bool) -> None:
-        if not bw_npy.exists() or not inlier_csv.exists():
+    def _add_entry(label: str, bw_npy: Path, recall_csv: Path, is_baseline: bool) -> None:
+        if not bw_npy.exists():
             return
-        bw = _load_bandwidth_mb(bw_npy)
-        if args.metric == 'inliers':
-            val = float(_count_inliers(inlier_csv))
-        else:
-            # AC: look for ac_values.npy in folder root (not yet implemented as npy)
-            # Fall back to counting inliers as proxy
-            val = float(_count_inliers(inlier_csv))
+        bw  = _load_bandwidth_mb(bw_npy)
+        val = _load_recall(recall_csv, args.bucket, args.inlier_recall)
+        if val is None:
+            print(f'  [{label}] No recall data — skipping.')
+            return
         entries.append({'label': label, 'bw': bw, 'val': val, 'is_baseline': is_baseline})
 
     # Variants
     for bw_npy in sorted(folder.glob(f'{exp}-*_bandwidth.npy')):
         variant = bw_npy.stem.replace(f'{exp}-', '').replace('_bandwidth', '')
-        inlier_csv = folder / variant / 'inlier_loops.csv'
-        _add_entry(variant, bw_npy, inlier_csv, is_baseline=False)
+        recall_csv = folder / variant / 'loops_recall.csv'
+        _add_entry(variant, bw_npy, recall_csv, is_baseline=False)
 
     # Baselines
     baseline_root = folder.parent / 'baselines' / exp
     if baseline_root.exists():
         for bw_npy in sorted(baseline_root.glob(f'{exp}-*_bandwidth.npy')):
             method = bw_npy.stem.replace(f'{exp}-', '').replace('_bandwidth', '')
-            inlier_csv = baseline_root / method / 'inlier_loops.csv'
-            _add_entry(method, bw_npy, inlier_csv, is_baseline=True)
+            recall_csv = baseline_root / method / 'loops_recall.csv'
+            _add_entry(method, bw_npy, recall_csv, is_baseline=True)
 
     if not entries:
         print('No data found.')
         return
 
+    recall_type = 'inlier recall' if args.inlier_recall else 'recall'
     for e in sorted(entries, key=lambda x: x['bw']):
         print(f"  {e['label']:20s}  bw={e['bw']:.1f} MB  "
-              f"{'inliers' if args.metric == 'inliers' else 'λ₂'}={e['val']:.1f}"
+              f"{recall_type}@{args.bucket}°={e['val']:.3f}"
               f"  {'[baseline]' if e['is_baseline'] else ''}")
 
     # ------------------------------------------------------------------
@@ -200,11 +211,10 @@ def main() -> None:
                 xytext=(bw_span * 0.05, val_span * 0.05))
 
     # Axes labels and formatting
-    y_label = 'Verified Inlier Loop Closures' if args.metric == 'inliers' \
-              else r'Algebraic Connectivity $\lambda_2$'
+    recall_label = ('Inlier Recall' if args.inlier_recall else 'Recall') + f' @{args.bucket}°'
     ax.set_xlabel('Total Comm. Bandwidth (MB)  [BoW + VLC, lower is better →]')
-    ax.set_ylabel(y_label + '\n[higher is better ↑]')
-    ax.set_title(f'{exp} — Bandwidth vs. Verified Loop Closures', fontsize=7)
+    ax.set_ylabel(recall_label + '  [higher is better ↑]')
+    ax.set_title(f'{exp} — Bandwidth vs. Loop Closure Recall', fontsize=7)
     ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.3)
     ax.set_xlim(left=0, right=bw_span)
     ax.set_ylim(bottom=0, top=val_span)
