@@ -3,12 +3,14 @@
 Compute the algebraic connectivity (Fiedler value, λ₂ of the Laplacian) of
 the combined multi-robot pose graph for each variant in an experiment folder.
 
-All DPGO g2o files (bpsam_robot_*.g2o) from every robot's dpgo/ directory are
-merged into a single undirected graph.  Inter-robot edges that appear in
-multiple robot files are deduplicated.  Edge weights are taken from the trace
-of the 6×6 information matrix stored in each EDGE_SE3:QUAT line.
+Two pose-graph formats are supported:
+  - DPGO g2o  (bpsam_robot_*.g2o): used by our system variants.
+    Edge weights = trace of the 6×6 info matrix.
+  - Kimera-Multi measurements.csv  (robot_src,pose_src,robot_dst,pose_dst,...,weight):
+    used by the Kimera-Multi baseline.  Edge weights = weight column.
 
-A bar chart comparing algebraic connectivity across variants (and baselines)
+Inter-robot edges that appear in multiple robot files are deduplicated.
+A bar chart comparing algebraic connectivity across variants and baselines
 is saved as algebraic_connectivity.pdf/png inside the experiment folder.
 
 Usage:
@@ -18,6 +20,7 @@ Usage:
 """
 
 import argparse
+import csv
 from pathlib import Path
 
 import networkx as nx
@@ -25,6 +28,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
+
+# Large multiplier to encode (robot_id, pose_index) as a single integer
+_POSE_ID_MULT = 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +76,32 @@ def load_g2o(path: Path) -> tuple[set[int], dict[frozenset, float]]:
     return vertices, edges
 
 
-def build_graph(g2o_files: list[Path], weighted: bool) -> nx.Graph:
+def load_kimera_measurements(paths: list[Path]) -> tuple[set[int], dict[frozenset, float]]:
+    """Parse Kimera-Multi measurements.csv files.
+
+    Node IDs are encoded as robot_id * _POSE_ID_MULT + pose_index.
+    Edge weight is taken from the 'weight' column.
+    """
+    vertices: set[int] = set()
+    edges: dict[frozenset, float] = {}
+    for path in paths:
+        with open(path) as f:
+            for row in csv.DictReader(f):
+                try:
+                    id1 = int(row["robot_src"]) * _POSE_ID_MULT + int(row["pose_src"])
+                    id2 = int(row["robot_dst"]) * _POSE_ID_MULT + int(row["pose_dst"])
+                    w = float(row["weight"])
+                except (KeyError, ValueError):
+                    continue
+                vertices.add(id1)
+                vertices.add(id2)
+                key = frozenset({id1, id2})
+                if key not in edges or edges[key] < w:
+                    edges[key] = w
+    return vertices, edges
+
+
+def build_graph_from_g2o(g2o_files: list[Path], weighted: bool) -> nx.Graph:
     """Combine multiple g2o files into one networkx graph."""
     all_vertices: set[int] = set()
     all_edges: dict[frozenset, float] = {}
@@ -90,6 +121,17 @@ def build_graph(g2o_files: list[Path], weighted: bool) -> nx.Graph:
     return G
 
 
+def build_graph_from_measurements(meas_files: list[Path], weighted: bool) -> nx.Graph:
+    """Build networkx graph from Kimera-Multi measurements.csv files."""
+    vertices, edges = load_kimera_measurements(meas_files)
+    G = nx.Graph()
+    G.add_nodes_from(vertices)
+    for key, w in edges.items():
+        id1, id2 = tuple(key)
+        G.add_edge(id1, id2, weight=w if weighted else 1.0)
+    return G
+
+
 # ---------------------------------------------------------------------------
 # Variant discovery
 # ---------------------------------------------------------------------------
@@ -103,9 +145,27 @@ def find_g2o_files(variant_dir: Path) -> list[Path]:
     return sorted(variant_dir.rglob("bpsam_robot_*.g2o"))
 
 
-def discover_variants(folder: Path) -> list[tuple[str, list[Path]]]:
-    """Return [(label, [g2o_paths]), ...] for variants and baselines."""
-    results = []
+def find_measurements_files(variant_dir: Path) -> list[Path]:
+    """Return all measurements.csv files under a variant directory."""
+    return sorted(variant_dir.rglob("measurements.csv"))
+
+
+# Each entry: (label, files, format) where format is "g2o" or "measurements"
+VariantEntry = tuple[str, list[Path], str]
+
+
+def discover_variants(folder: Path) -> list[VariantEntry]:
+    """Return [(label, files, format), ...] for variants and baselines."""
+    results: list[VariantEntry] = []
+
+    def _add(label: str, d: Path) -> None:
+        g2o = find_g2o_files(d)
+        if g2o:
+            results.append((label, g2o, "g2o"))
+            return
+        meas = find_measurements_files(d)
+        if meas:
+            results.append((label, meas, "measurements"))
 
     # Variant subdirs
     variant_dirs = [
@@ -114,22 +174,16 @@ def discover_variants(folder: Path) -> list[tuple[str, list[Path]]]:
     ]
     if variant_dirs:
         for d in variant_dirs:
-            files = find_g2o_files(d)
-            if files:
-                results.append((d.name, files))
+            _add(d.name, d)
     else:
-        files = find_g2o_files(folder)
-        if files:
-            results.append((folder.name, files))
+        _add(folder.name, folder)
 
     # Baselines
     baseline_dir = folder.parent / "baselines" / folder.name
     if baseline_dir.exists():
         for method_dir in sorted(baseline_dir.iterdir()):
             if method_dir.is_dir():
-                files = find_g2o_files(method_dir)
-                if files:
-                    results.append((method_dir.name, files))
+                _add(method_dir.name, method_dir)
 
     return results
 
@@ -155,7 +209,7 @@ def main() -> None:
     weighted = not args.unweighted
     variants = discover_variants(folder)
     if not variants:
-        print("No bpsam_robot_*.g2o files found.")
+        print("No pose graph files found.")
         raise SystemExit(1)
 
     print(f"Experiment: {folder.name}  ({'weighted' if weighted else 'unweighted'})")
@@ -163,9 +217,14 @@ def main() -> None:
     print("-" * 65)
 
     labels, values, is_baseline = [], [], []
+    baseline_dir = folder.parent / "baselines" / folder.name
 
-    for label, g2o_files in variants:
-        G = build_graph(g2o_files, weighted=weighted)
+    for label, files, fmt in variants:
+        if fmt == "g2o":
+            G = build_graph_from_g2o(files, weighted=weighted)
+        else:
+            G = build_graph_from_measurements(files, weighted=weighted)
+
         n_nodes = G.number_of_nodes()
         n_edges = G.number_of_edges()
         connected = nx.is_connected(G)
@@ -173,17 +232,13 @@ def main() -> None:
         if connected:
             lam2 = nx.algebraic_connectivity(G, weight="weight", method="tracemin_lu")
         else:
-            # Compute on the largest connected component
             lcc = G.subgraph(max(nx.connected_components(G), key=len)).copy()
             lam2 = nx.algebraic_connectivity(lcc, weight="weight", method="tracemin_lu")
 
         conn_str = "yes" if connected else f"no (LCC {max(len(c) for c in nx.connected_components(G))})"
-        print(f"{label:<20} {n_nodes:>6} {n_edges:>7} {conn_str:>10} {lam2:>16.4f}")
+        print(f"{label:<20} {n_nodes:>6} {n_edges:>7} {conn_str:>10} {lam2:>16.4e}")
 
-        # Determine if baseline (not a variant subdir of folder)
-        baseline_dir = folder.parent / "baselines" / folder.name
-        is_bl = (g2o_files[0].is_relative_to(baseline_dir)) if g2o_files else False
-
+        is_bl = files[0].is_relative_to(baseline_dir) if files else False
         labels.append(label)
         values.append(lam2)
         is_baseline.append(is_bl)
