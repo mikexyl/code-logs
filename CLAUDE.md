@@ -35,6 +35,13 @@ Auto-discovers variant sub-folders (subdirs containing robot dirs with `distribu
 
 Finds all `Robot *.tum` + matching GT files, concatenates per robot, runs `evo_ape tum` and `evo_rpe tum` (delta 5 m), saves `evo_ape.zip`, `evo_rpe.zip`, aligned trajectory plots (full + half-column). Generates two trajectory plot versions: `trajectories_aligned_no_loops.*` (clean) and `trajectories_aligned.*` (with loop closure lines overlaid).
 
+**Loop overlay requires `distributed/` dirs**: loop closure lines are drawn only when each robot dir contains `distributed/kimera_distributed_keyframes.csv` and `distributed/loop_closures.csv`. Variants with only `dpgo/` (no `distributed/`) will produce identical `trajectories_aligned.*` and `trajectories_aligned_no_loops.*` plots.
+
+When evaluating a variant sub-folder directly (e.g. `g2345/ns-as`), pass `--gt_exp_name <experiment>` so GT files are resolved from `ground_truth/<experiment>/` instead of `ground_truth/ns-as/`:
+```bash
+python3 evaluate.py g2345/ns-as --gt_folder ground_truth --gt_exp_name g2345
+```
+
 ### extract_gt_loops.py — GT loop closure extraction
 ```bash
 python3 extract_gt_loops.py ground_truth/campus --dist-xy 10.0 --dist-z 25.0 \
@@ -97,6 +104,17 @@ Key options: `--max-gap` (default 2.5 s), `--max-angle` (default 120°), `--bins
 python3 plot_algebraic_connectivity.py <folder>
 ```
 Reads `inlier_loops.csv` (written by `evaluate_loops_recall.py`) and `kimera_distributed_keyframes.csv` per variant, builds an unweighted NetworkX graph (odometry chains + inlier inter-robot edges), and computes λ₂ of the Laplacian. Auto-discovers variants and `baselines/<exp>/*/`. Saves `algebraic_connectivity.pdf/png`.
+
+### plot_scalability.py — bandwidth vs recall/ATE Pareto scatter
+```bash
+python3 plot_scalability.py <folder>
+python3 plot_scalability.py <folder> --ate
+python3 plot_scalability.py <folder> --buckets 10 20 30
+```
+X-axis: total BoW+VLC bandwidth (MB). Default Y-axis: recall at multiple rotation buckets (multi-panel).
+`--ate`: also produces `scalability_ate.pdf/png` with ATE RMSE on Y-axis.
+Always produces `yield.pdf/png` (verified inliers per MB bar chart).
+Auto-discovers variants and baselines. Reads `*_bandwidth.npy`, `loops_recall.csv`, and `evo_ape.zip`.
 
 ### plot_ablation.py — compare experiment variants
 ```bash
