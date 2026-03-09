@@ -23,6 +23,37 @@ pixi run build    # recommended — also generates compile_commands.json
 ```
 The binary is `build/optimize_offline`. **Note:** it hardcodes the base path `/workspaces/src/code-logs/` — edit `src/optimize_offline.cpp` if running elsewhere.
 
+## Full Analysis Pipeline
+
+Run in this order for a complete evaluation of experiment `<exp>` (e.g. `campus`, `a5678`):
+
+```bash
+# 1. ATE/RPE + trajectory plots
+python3 evaluate.py <exp> --gt_folder ground_truth
+
+# 2. Loop recall + outlier analysis — writes loops_recall.csv and inlier_loops.csv per variant
+python3 evaluate_loops_recall.py <exp> ground_truth/<exp> --tol 5.0
+# UAV datasets: add --max-angle 60
+
+# 3. Algebraic connectivity (requires inlier_loops.csv from step 2)
+python3 plot_algebraic_connectivity.py <exp>
+
+# 4. GT rotation distribution of detected loops
+python3 plot_loop_rotation_dist.py <exp> ground_truth/<exp>
+
+# 5. Scalability scatter (bandwidth vs recall / ATE)
+python3 plot_scalability.py <exp>
+
+# 6. Bandwidth & loops comparison + recall comparison
+#    Reads *_bandwidth.npy / *_loops.npy extracted from .rrd via plot_rrd.py --bandwidth/--loops
+#    Re-run extraction manually whenever new .rrd data arrives
+python3 plot_ablation.py <exp>
+```
+
+**Dependency**: step 6 (`plot_ablation.py`) reads `*_bandwidth.npy` / `*_loops.npy` files that are
+extracted separately from Rerun recordings via `plot_rrd.py --bandwidth` / `--loops`. These are **not**
+regenerated automatically — run extraction whenever new `.rrd` data is available.
+
 ## Scripts
 
 ### evaluate.py — ATE/RPE evaluation
