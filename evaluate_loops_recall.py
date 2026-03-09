@@ -810,56 +810,102 @@ def plot_outlier_by_gt(
     print(f'Outlier-by-GT plot → {out_dir}/outlier_by_gt.pdf')
 
 
+def _hist_subplots(
+    all_series: list[tuple[str, list, list, bool]],  # (label, col0_vals, col1_vals, is_baseline)
+    col0_xlabel: str, col1_xlabel: str,
+    col0_edges: np.ndarray, col1_edges: np.ndarray,
+    out_path: Path,
+    out_label: str,
+) -> None:
+    """Shared renderer: per-variant rows × 2 columns of bar histograms, shared x per column."""
+    n_rows = len(all_series)
+    row_h  = 1.2
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (7.0, max(2.0, n_rows * row_h))})
+    fig, axes = plt.subplots(
+        n_rows, 2, sharex='col',
+        gridspec_kw={'hspace': 0.12, 'wspace': 0.35},
+    )
+    if n_rows == 1:
+        axes = [axes]  # make iterable: axes[row][col]
+
+    # Determine shared y-max per column for uniform scale
+    y_max0 = y_max1 = 0.0
+    for label, vals0, vals1, _ in all_series:
+        if vals0:
+            c0, _ = np.histogram(vals0, bins=col0_edges)
+            y_max0 = max(y_max0, float(c0.max()))
+        if vals1:
+            c1, _ = np.histogram(vals1, bins=col1_edges)
+            y_max1 = max(y_max1, float(c1.max()))
+
+    for i, (label, vals0, vals1, is_bl) in enumerate(all_series):
+        row = axes[i]
+        ax0, ax1 = row[0], row[1]
+        color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
+
+        for ax, vals, edges, y_max in [
+            (ax0, vals0, col0_edges, y_max0),
+            (ax1, vals1, col1_edges, y_max1),
+        ]:
+            if vals:
+                counts, _ = np.histogram(vals, bins=edges)
+                ax.bar(edges[:-1], counts, width=np.diff(edges),
+                       align='edge', color=color,
+                       edgecolor='black' if is_bl else color,
+                       linewidth=0.3, alpha=0.85)
+            else:
+                counts = np.zeros(len(edges) - 1, dtype=int)
+            tag = f'{label}  (n={len(vals)})'
+            ax.text(0.98, 0.88, tag, transform=ax.transAxes,
+                    ha='right', va='top', fontsize=5,
+                    style='italic' if is_bl else 'normal')
+            ax.set_ylim(0, y_max * 1.25)
+            ax.set_yticks([0, int(y_max)])
+            ax.yaxis.set_tick_params(labelsize=4.5)
+            ax.grid(True, axis='y', alpha=0.25, linestyle='--', linewidth=0.3)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+    # X-axis labels only on bottom row
+    bottom = axes[-1]
+    bottom[0].set_xlabel(col0_xlabel, fontsize=6)
+    bottom[1].set_xlabel(col1_xlabel, fontsize=6)
+    bottom[0].xaxis.set_tick_params(labelsize=5)
+    bottom[1].xaxis.set_tick_params(labelsize=5)
+
+    # Shared y label
+    fig.text(0.01, 0.5, 'Count', va='center', rotation='vertical', fontsize=6)
+
+    plt.tight_layout()
+    save_fig(fig, out_path)
+    plt.close(fig)
+    print(f'{out_label} → {out_path}.pdf')
+
+
 def plot_loop_error_histograms(
     variant_stats: list[tuple[str, list[dict]]],
     baseline_stats: list[tuple[str, list[dict]]],
     out_dir: Path,
     max_trans: float = 5.0,
     max_rot: float = 180.0,
-    bins: int = 25,
+    bins: int = 50,
 ) -> None:
-    """Two-panel histogram of GT translation + rotation error for ALL detected loops.
-
-    Left panel:  translation error distribution (m) — reveals fat tails in sloppy methods.
-    Right panel: rotation error distribution (°).
-    Threshold lines mark the inlier/outlier boundary used elsewhere.
-    """
+    """Per-variant subplots of GT translation + rotation error for ALL detected loops."""
     n_variants = len(variant_stats)
-    all_series = variant_stats + baseline_stats
-
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (7.0, 2.5)})
-    fig, (ax_t, ax_r) = plt.subplots(1, 2)
-    t_edges = np.linspace(0, max_trans, bins + 1)
-    r_edges = np.linspace(0, max_rot,   bins + 1)
-
-    for i, (label, records) in enumerate(all_series):
-        is_bl = i >= n_variants
-        t_errs = [r['trans_err'] for r in records]
-        r_errs = [r['rot_err']   for r in records]
-        if not t_errs:
-            continue
-        color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
-        ls = '--' if is_bl else '-'
-        kw = dict(histtype='step', color=color, linestyle=ls,
-                  linewidth=1.0, density=True,
-                  label=f'{label} (n={len(t_errs)})')
-        ax_t.hist(t_errs, bins=t_edges, **kw)
-        ax_r.hist(r_errs, bins=r_edges, **kw)
-
-    ax_t.set_xlabel('GT Translation Error (m)')
-    ax_t.set_ylabel('Density')
-    ax_t.legend(fontsize=5, loc='upper right')
-    ax_t.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
-
-    ax_r.set_xlabel('GT Rotation Error (°)')
-    ax_r.set_ylabel('Density')
-    ax_r.legend(fontsize=5, loc='upper right')
-    ax_r.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
-
-    plt.tight_layout()
-    save_fig(fig, out_dir / 'loop_error_hist')
-    plt.close(fig)
-    print(f'Loop error hist → {out_dir}/loop_error_hist.pdf')
+    all_series = [
+        (label, [r['trans_err'] for r in records], [r['rot_err'] for r in records],
+         i >= n_variants)
+        for i, (label, records) in enumerate(variant_stats + baseline_stats)
+    ]
+    _hist_subplots(
+        all_series,
+        col0_xlabel='GT Translation Error (m)',
+        col1_xlabel='GT Rotation Error (°)',
+        col0_edges=np.linspace(0, max_trans, bins + 1),
+        col1_edges=np.linspace(0, max_rot,   bins + 1),
+        out_path=out_dir / 'loop_error_hist',
+        out_label='Loop error hist',
+    )
 
 
 def plot_loop_measurement_hist(
@@ -868,52 +914,24 @@ def plot_loop_measurement_hist(
     out_dir: Path,
     max_trans: float = 20.0,
     max_rot: float = 180.0,
-    bins: int = 30,
+    bins: int = 50,
 ) -> None:
-    """Two-panel histogram of the detected loop relative-pose measurements.
-
-    Left panel:  translation magnitude ||t_detected|| (m)
-    Right panel: rotation angle of R_detected (°)
-
-    Shows the distribution of what the loop closure detector is actually proposing,
-    independent of GT accuracy.
-    """
+    """Per-variant subplots of detected loop translation magnitude and rotation angle."""
     n_variants = len(variant_stats)
-    all_series = variant_stats + baseline_stats
-
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (7.0, 2.5)})
-    fig, (ax_t, ax_r) = plt.subplots(1, 2)
-    t_edges = np.linspace(0, max_trans, bins + 1)
-    r_edges = np.linspace(0, max_rot,   bins + 1)
-
-    for i, (label, records) in enumerate(all_series):
-        is_bl = i >= n_variants
-        t_meas = [r['det_dist']    for r in records]
-        r_meas = [r['det_rot_deg'] for r in records]
-        if not t_meas:
-            continue
-        color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
-        ls = '--' if is_bl else '-'
-        kw = dict(histtype='step', color=color, linestyle=ls,
-                  linewidth=1.0, density=True,
-                  label=f'{label} (n={len(t_meas)})')
-        ax_t.hist(t_meas, bins=t_edges, **kw)
-        ax_r.hist(r_meas, bins=r_edges, **kw)
-
-    ax_t.set_xlabel('Detected Translation (m)')
-    ax_t.set_ylabel('Density')
-    ax_t.legend(fontsize=5, loc='upper right')
-    ax_t.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
-
-    ax_r.set_xlabel('Detected Rotation (°)')
-    ax_r.set_ylabel('Density')
-    ax_r.legend(fontsize=5, loc='upper right')
-    ax_r.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
-
-    plt.tight_layout()
-    save_fig(fig, out_dir / 'loop_measurement_hist')
-    plt.close(fig)
-    print(f'Loop measurement hist → {out_dir}/loop_measurement_hist.pdf')
+    all_series = [
+        (label, [r['det_dist'] for r in records], [r['det_rot_deg'] for r in records],
+         i >= n_variants)
+        for i, (label, records) in enumerate(variant_stats + baseline_stats)
+    ]
+    _hist_subplots(
+        all_series,
+        col0_xlabel='Detected Translation (m)',
+        col1_xlabel='Detected Rotation (°)',
+        col0_edges=np.linspace(0, max_trans, bins + 1),
+        col1_edges=np.linspace(0, max_rot,   bins + 1),
+        out_path=out_dir / 'loop_measurement_hist',
+        out_label='Loop measurement hist',
+    )
 
 
 def plot_outlier_comparison(
