@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
+from utils.io import load_variant_aliases, apply_variant_alias
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig, mark_endpoint
 
 COLORS = ROBOT_COLORS
@@ -31,6 +32,18 @@ def _short_label(stem: str, type_name: str) -> str:
     if stem.endswith(suffix):
         return stem[: -len(suffix)]
     return stem
+
+
+def _variant_key(raw_label: str, folder_name: str) -> str:
+    """Strip '<folder_name>-' prefix from a npy stem label to get the variant key.
+
+    e.g. raw_label='campus-ns-as', folder_name='campus' → 'ns-as'
+    Falls back to raw_label if prefix not present.
+    """
+    prefix = folder_name + "-"
+    if raw_label.startswith(prefix):
+        return raw_label[len(prefix):]
+    return raw_label
 
 
 def group_npy_files(folder: Path) -> dict[str, list[Path]]:
@@ -110,26 +123,37 @@ def _load_bandwidth(path: Path) -> dict | None:
 # Per-type comparison plots
 # ---------------------------------------------------------------------------
 
-def plot_bandwidth_comparison(paths: list[Path], folder: Path) -> None:
+def plot_bandwidth_comparison(paths: list[Path], folder: Path,
+                              aliases: dict | None = None) -> None:
     """
     Overlay cumulative BoW + VLC bandwidth for each variant (CBS excluded).
     All variants are truncated to the shortest experiment duration.
     """
+    if aliases is None:
+        aliases = {}
     datasets = [(p, _load_bandwidth(p)) for p in paths]
     datasets = [(p, d) for p, d in datasets if d is not None]
-    if not datasets:
+    # Apply alias filtering
+    filtered = []
+    for p, d in datasets:
+        raw = _short_label(p.stem, "bandwidth")
+        disp = apply_variant_alias(aliases, _variant_key(raw, folder.name))
+        if disp is None:
+            continue
+        filtered.append((disp, d))
+    datasets_labelled = filtered
+    if not datasets_labelled:
         print("  No parseable bandwidth data — skipping.")
         return
-    t_end = min(d["t_sec"][-1] for _, d in datasets)
+    t_end = min(d["t_sec"][-1] for _, d in datasets_labelled)
 
     plt.rcParams.update(IEEE_RC)
     fig, ax = plt.subplots()
 
-    for i, (p, d) in enumerate(datasets):
+    for i, (label, d) in enumerate(datasets_labelled):
         t_sec = d["t_sec"]
         mask  = t_sec <= t_end
         t_m, v_m = t_sec[mask], d["total"][mask]
-        label = _short_label(p.stem, "bandwidth")
         color = COLORS[i % len(COLORS)]
         ax.plot(t_m, v_m, color=color, label=label)
         mark_endpoint(ax, t_m, v_m, color, fmt="{:.1f}")
@@ -154,7 +178,8 @@ def plot_bandwidth_comparison(paths: list[Path], folder: Path) -> None:
     plt.close(fig)
 
 
-def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
+def plot_loops_comparison(paths: list[Path], folder: Path,
+                          aliases: dict | None = None) -> None:
     """
     Two-panel plot:
       top:    PR (solid) and GV (dashed) counts per variant
@@ -163,12 +188,23 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
     Supports both main-system (pr_total/gv_total) and baseline
     (bow_matches/num_loop_closures) schemas.
     """
+    if aliases is None:
+        aliases = {}
     datasets = [(p, _load_loops(p)) for p in paths]
     datasets = [(p, d) for p, d in datasets if d is not None]
-    if not datasets:
+    # Apply alias filtering; replace label with display name
+    filtered = []
+    for p, d in datasets:
+        raw = _short_label(p.stem, "loops")
+        disp = apply_variant_alias(aliases, _variant_key(raw, folder.name))
+        if disp is None:
+            continue
+        filtered.append((disp, d))
+    datasets_labelled = filtered
+    if not datasets_labelled:
         print("  No parseable loops data — skipping.")
         return
-    t_end = min(d["t_sec"][-1] for _, d in datasets)
+    t_end = min(d["t_sec"][-1] for _, d in datasets_labelled)
 
     # Load inlier counts (variant_name → n_inliers) from companion file
     inlier_counts = _load_inlier_counts(folder)
@@ -180,10 +216,9 @@ def plot_loops_comparison(paths: list[Path], folder: Path) -> None:
     fig.subplots_adjust(hspace=0.08)
 
     any_inlier = False
-    for i, (p, d) in enumerate(datasets):
+    for i, (label, d) in enumerate(datasets_labelled):
         t_sec = d["t_sec"]
         mask  = t_sec <= t_end
-        label = _short_label(p.stem, "loops")
         color = COLORS[i % len(COLORS)]
 
         pr = d["pr"][mask]
@@ -308,12 +343,21 @@ def _load_recall(path: Path) -> dict | None:
 
 
 def plot_recall_comparison(variant_paths: list[Path], baseline_paths: list[Path],
-                           folder: Path) -> None:
+                           folder: Path, aliases: dict | None = None) -> None:
     """Line-curve recall per rotation bucket. Baselines shown as dashed lines."""
+    if aliases is None:
+        aliases = {}
     variant_data  = [(p, _load_recall(p)) for p in variant_paths]
     baseline_data = [(p, _load_recall(p)) for p in baseline_paths]
     variant_data  = [(p, d) for p, d in variant_data  if d is not None]
     baseline_data = [(p, d) for p, d in baseline_data if d is not None]
+    # Apply alias filtering and replace label
+    variant_data  = [(p, dict(d, label=apply_variant_alias(aliases, d["label"])))
+                     for p, d in variant_data
+                     if apply_variant_alias(aliases, d["label"]) is not None]
+    baseline_data = [(p, dict(d, label=apply_variant_alias(aliases, d["label"])))
+                     for p, d in baseline_data
+                     if apply_variant_alias(aliases, d["label"]) is not None]
 
     all_data = variant_data + baseline_data
     if not all_data:
@@ -347,7 +391,7 @@ def plot_recall_comparison(variant_paths: list[Path], baseline_paths: list[Path]
     plt.close(fig)
 
 
-PLOTTERS = {
+PLOTTERS: dict[str, object] = {
     "bandwidth": plot_bandwidth_comparison,
     "loops":     plot_loops_comparison,
 }
@@ -370,6 +414,8 @@ def main() -> None:
         print(f"Error: {folder} does not exist.")
         raise SystemExit(1)
 
+    aliases = load_variant_aliases()
+
     groups = group_npy_files(folder)
     if not groups:
         print(f"No *_bandwidth.npy or *_loops.npy files found in {folder}")
@@ -382,7 +428,7 @@ def main() -> None:
         if len(paths) < 2:
             print("  (only one variant — skipping comparison plot)")
             continue
-        PLOTTERS[type_name](paths, folder)
+        PLOTTERS[type_name](paths, folder, aliases)
 
     # Recall comparison (loops_recall.csv files)
     variant_recall, baseline_recall = group_recall_files(folder)
@@ -391,7 +437,7 @@ def main() -> None:
         print(f"\n[recall] {len(variant_recall)} variant(s), {len(baseline_recall)} baseline(s):")
         for p in variant_recall + baseline_recall:
             print(f"  {p}")
-        plot_recall_comparison(variant_recall, baseline_recall, folder)
+        plot_recall_comparison(variant_recall, baseline_recall, folder, aliases)
     elif total_recall == 1:
         print(f"\n[recall] only one variant found — skipping comparison plot")
 
