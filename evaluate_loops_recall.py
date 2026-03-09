@@ -806,48 +806,63 @@ def plot_outlier_by_gt(
     print(f'Outlier-by-GT plot → {out_dir}/outlier_by_gt.pdf')
 
 
-def plot_inlier_trans_error_hist(
+def plot_loop_error_histograms(
     variant_stats: list[tuple[str, list[dict]]],
     baseline_stats: list[tuple[str, list[dict]]],
     out_dir: Path,
-    max_err: float = 5.0,
+    max_trans: float = 5.0,
+    max_rot: float = 180.0,
     bins: int = 25,
+    trans_abs: float = 2.0,
+    rot_thr: float = 40.0,
 ) -> None:
-    """Histogram of GT translation error for accepted (inlier) loops, all variants overlaid.
+    """Two-panel histogram of GT translation + rotation error for ALL detected loops.
 
-    Shows whether a method's accepted loops cluster near 0 m error (tight geometric
-    quality) or spread into a 'fat tail' at >2–3 m (sloppy inliers).
+    Left panel:  translation error distribution (m) — reveals fat tails in sloppy methods.
+    Right panel: rotation error distribution (°).
+    Threshold lines mark the inlier/outlier boundary used elsewhere.
     """
     n_variants = len(variant_stats)
     all_series = variant_stats + baseline_stats
 
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.5)})
-    fig, ax = plt.subplots()
-    bin_edges = np.linspace(0, max_err, bins + 1)
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (7.0, 2.5)})
+    fig, (ax_t, ax_r) = plt.subplots(1, 2)
+    t_edges = np.linspace(0, max_trans, bins + 1)
+    r_edges = np.linspace(0, max_rot,   bins + 1)
 
     for i, (label, records) in enumerate(all_series):
         is_bl = i >= n_variants
-        inlier_errs = [r['trans_err'] for r in records if not r['is_outlier']]
-        if not inlier_errs:
+        t_errs = [r['trans_err'] for r in records]
+        r_errs = [r['rot_err']   for r in records]
+        if not t_errs:
             continue
         color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
         ls = '--' if is_bl else '-'
-        ax.hist(inlier_errs, bins=bin_edges, histtype='step',
-                color=color, linestyle=ls, linewidth=1.0,
-                label=f'{label} (n={len(inlier_errs)})',
-                density=True)
+        kw = dict(histtype='step', color=color, linestyle=ls,
+                  linewidth=1.0, density=True,
+                  label=f'{label} (n={len(t_errs)})')
+        ax_t.hist(t_errs, bins=t_edges, **kw)
+        ax_r.hist(r_errs, bins=r_edges, **kw)
 
-    # Vertical line at the default trans_abs threshold (2 m)
-    ax.axvline(x=2.0, color='gray', linestyle=':', linewidth=0.8, alpha=0.7, label='2 m threshold')
+    ax_t.axvline(x=trans_abs, color='gray', linestyle=':', linewidth=0.8, alpha=0.7,
+                 label=f'{trans_abs:.0f} m threshold')
+    ax_r.axvline(x=rot_thr,   color='gray', linestyle=':', linewidth=0.8, alpha=0.7,
+                 label=f'{rot_thr:.0f}° threshold')
 
-    ax.set_xlabel('GT Translation Error of Accepted Loops (m)')
-    ax.set_ylabel('Density')
-    ax.legend(fontsize=5, loc='upper right')
-    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+    ax_t.set_xlabel('GT Translation Error (m)')
+    ax_t.set_ylabel('Density')
+    ax_t.legend(fontsize=5, loc='upper right')
+    ax_t.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+
+    ax_r.set_xlabel('GT Rotation Error (°)')
+    ax_r.set_ylabel('Density')
+    ax_r.legend(fontsize=5, loc='upper right')
+    ax_r.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+
     plt.tight_layout()
-    save_fig(fig, out_dir / 'inlier_trans_error_hist')
+    save_fig(fig, out_dir / 'loop_error_hist')
     plt.close(fig)
-    print(f'Inlier trans error hist → {out_dir}/inlier_trans_error_hist.pdf')
+    print(f'Loop error hist → {out_dir}/loop_error_hist.pdf')
 
 
 def plot_outlier_comparison(
@@ -1083,7 +1098,8 @@ def main() -> None:
 
     if gt_stats_variant or gt_stats_baseline:
         plot_outlier_by_gt(gt_stats_variant, gt_stats_baseline, out_plot_dir)
-        plot_inlier_trans_error_hist(gt_stats_variant, gt_stats_baseline, out_plot_dir)
+        plot_loop_error_histograms(gt_stats_variant, gt_stats_baseline, out_plot_dir,
+                                   trans_abs=args.trans_abs, rot_thr=args.rot_thr)
     else:
         print('  No per-loop data for GT-breakdown plot.')
 
