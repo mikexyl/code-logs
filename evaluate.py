@@ -352,6 +352,7 @@ def run_evaluation(variant_dir: str, gt_folder, gt_exp_name: str, tf_file):
             if os.path.exists(f):
                 os.remove(f)
 
+        ape_txt  = os.path.join(variant_dir, "evo_ape.txt")
         cmd = ["evo_ape", "tum", combined_gt_path, combined_est_path, "-va",
                "--align", "--t_max_diff", "1.5",
                "--plot_mode", "xy",
@@ -363,6 +364,8 @@ def run_evaluation(variant_dir: str, gt_folder, gt_exp_name: str, tf_file):
             print("\n" + "="*40 + "\nEVO APE RESULTS\n" + "="*40)
             print(result.stdout)
             print("="*40)
+            with open(ape_txt, 'w') as fout:
+                fout.write(result.stdout)
         except subprocess.CalledProcessError as e:
             print("\nError running evo_ape:")
             print(e.stderr)
@@ -375,6 +378,7 @@ def run_evaluation(variant_dir: str, gt_folder, gt_exp_name: str, tf_file):
         # evo_rpe
         print("\nRunning evo rpe...")
         rpe_zip  = os.path.join(variant_dir, "evo_rpe.zip")
+        rpe_txt  = os.path.join(variant_dir, "evo_rpe.txt")
         rpe_plot = os.path.join(variant_dir, "evo_rpe.pdf")
         for f in [rpe_zip, rpe_plot]:
             if os.path.exists(f):
@@ -392,6 +396,8 @@ def run_evaluation(variant_dir: str, gt_folder, gt_exp_name: str, tf_file):
             print("\n" + "="*40 + "\nEVO RPE RESULTS\n" + "="*40)
             print(result.stdout)
             print("="*40)
+            with open(rpe_txt, 'w') as fout:
+                fout.write(result.stdout)
         except subprocess.CalledProcessError as e:
             print("\nError running evo_rpe:")
             print(e.stderr)
