@@ -730,7 +730,9 @@ def collect_outlier_stats(
             rot_err    = _rot_angle_deg(R_det.T @ R_rel_gt)
             is_outlier = trans_err > max(trans_abs, trans_rel * gt_dist) or rot_err > rot_thr
 
-            records.append({'gt_dist': gt_dist, 'gt_rot_deg': gt_rot_deg, 'is_outlier': is_outlier})
+            records.append({'gt_dist': gt_dist, 'gt_rot_deg': gt_rot_deg,
+                            'trans_err': trans_err, 'rot_err': rot_err,
+                            'is_outlier': is_outlier})
 
     return records
 
@@ -802,6 +804,50 @@ def plot_outlier_by_gt(
     save_fig(fig, out_dir / 'outlier_by_gt')
     plt.close(fig)
     print(f'Outlier-by-GT plot → {out_dir}/outlier_by_gt.pdf')
+
+
+def plot_inlier_trans_error_hist(
+    variant_stats: list[tuple[str, list[dict]]],
+    baseline_stats: list[tuple[str, list[dict]]],
+    out_dir: Path,
+    max_err: float = 5.0,
+    bins: int = 25,
+) -> None:
+    """Histogram of GT translation error for accepted (inlier) loops, all variants overlaid.
+
+    Shows whether a method's accepted loops cluster near 0 m error (tight geometric
+    quality) or spread into a 'fat tail' at >2–3 m (sloppy inliers).
+    """
+    n_variants = len(variant_stats)
+    all_series = variant_stats + baseline_stats
+
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.5)})
+    fig, ax = plt.subplots()
+    bin_edges = np.linspace(0, max_err, bins + 1)
+
+    for i, (label, records) in enumerate(all_series):
+        is_bl = i >= n_variants
+        inlier_errs = [r['trans_err'] for r in records if not r['is_outlier']]
+        if not inlier_errs:
+            continue
+        color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
+        ls = '--' if is_bl else '-'
+        ax.hist(inlier_errs, bins=bin_edges, histtype='step',
+                color=color, linestyle=ls, linewidth=1.0,
+                label=f'{label} (n={len(inlier_errs)})',
+                density=True)
+
+    # Vertical line at the default trans_abs threshold (2 m)
+    ax.axvline(x=2.0, color='gray', linestyle=':', linewidth=0.8, alpha=0.7, label='2 m threshold')
+
+    ax.set_xlabel('GT Translation Error of Accepted Loops (m)')
+    ax.set_ylabel('Density')
+    ax.legend(fontsize=5, loc='upper right')
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+    plt.tight_layout()
+    save_fig(fig, out_dir / 'inlier_trans_error_hist')
+    plt.close(fig)
+    print(f'Inlier trans error hist → {out_dir}/inlier_trans_error_hist.pdf')
 
 
 def plot_outlier_comparison(
@@ -1037,6 +1083,7 @@ def main() -> None:
 
     if gt_stats_variant or gt_stats_baseline:
         plot_outlier_by_gt(gt_stats_variant, gt_stats_baseline, out_plot_dir)
+        plot_inlier_trans_error_hist(gt_stats_variant, gt_stats_baseline, out_plot_dir)
     else:
         print('  No per-loop data for GT-breakdown plot.')
 
