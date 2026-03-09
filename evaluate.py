@@ -353,7 +353,8 @@ def run_evaluation(variant_dir: str, gt_folder, gt_exp_name: str, tf_file):
                 os.remove(f)
 
         cmd = ["evo_ape", "tum", combined_gt_path, combined_est_path, "-va",
-               "--align", "--plot_mode", "xy",
+               "--align", "--t_max_diff", "1.5",
+               "--plot_mode", "xy",
                "--save_plot", ape_plot, "--save_results", ape_zip]
         print(f"Command: {' '.join(cmd)}")
         try:
@@ -380,7 +381,8 @@ def run_evaluation(variant_dir: str, gt_folder, gt_exp_name: str, tf_file):
                 os.remove(f)
 
         rpe_cmd = ["evo_rpe", "tum", combined_gt_path, combined_est_path, "-va",
-                   "--align", "--delta", "5", "--delta_unit", "m",
+                   "--align", "--t_max_diff", "1.5",
+                   "--delta", "5", "--delta_unit", "m",
                    "--plot_mode", "xy",
                    "--save_plot", rpe_plot, "--save_results", rpe_zip]
         print(f"Command: {' '.join(rpe_cmd)}")
@@ -420,6 +422,14 @@ def main():
         ),
     )
     parser.add_argument(
+        "--gt_exp_name", default=None,
+        help=(
+            "Override the experiment name used to look up GT files under gt_folder. "
+            "Useful when evaluating a single variant dir directly, e.g. "
+            "'evaluate.py campus/ns-cs --gt_exp_name campus'."
+        ),
+    )
+    parser.add_argument(
         "--tf_file", default=None,
         help=(
             "Path to a file specifying the SE3 transform from the GT frame to the "
@@ -442,14 +452,14 @@ def main():
     if variants:
         print(f"Found {len(variants)} variant(s): {[v.name for v in variants]}")
         # GT is keyed by the parent experiment name (e.g. 'campus'), not the variant name
-        gt_exp_name = exp_dir.name
+        gt_exp_name = args.gt_exp_name if args.gt_exp_name else exp_dir.name
         if gt_folder:
             print(f"Ground truth root: {gt_folder}")
             print(f"  -> using subfolder: {os.path.join(gt_folder, gt_exp_name)}")
         for v in variants:
             run_evaluation(str(v), gt_folder, gt_exp_name, args.tf_file)
     else:
-        gt_exp_name = exp_dir.name
+        gt_exp_name = args.gt_exp_name if args.gt_exp_name else exp_dir.name
         if gt_folder:
             print(f"Ground truth root: {gt_folder}")
             print(f"  -> using subfolder: {os.path.join(gt_folder, gt_exp_name)}")
