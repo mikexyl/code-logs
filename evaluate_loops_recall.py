@@ -730,8 +730,12 @@ def collect_outlier_stats(
             rot_err    = _rot_angle_deg(R_det.T @ R_rel_gt)
             is_outlier = trans_err > max(trans_abs, trans_rel * gt_dist) or rot_err > rot_thr
 
+            det_dist    = float(np.linalg.norm(p_det))
+            det_rot_deg = _rot_angle_deg(R_det)
+
             records.append({'gt_dist': gt_dist, 'gt_rot_deg': gt_rot_deg,
                             'trans_err': trans_err, 'rot_err': rot_err,
+                            'det_dist': det_dist, 'det_rot_deg': det_rot_deg,
                             'is_outlier': is_outlier})
 
     return records
@@ -856,6 +860,60 @@ def plot_loop_error_histograms(
     save_fig(fig, out_dir / 'loop_error_hist')
     plt.close(fig)
     print(f'Loop error hist → {out_dir}/loop_error_hist.pdf')
+
+
+def plot_loop_measurement_hist(
+    variant_stats: list[tuple[str, list[dict]]],
+    baseline_stats: list[tuple[str, list[dict]]],
+    out_dir: Path,
+    max_trans: float = 20.0,
+    max_rot: float = 180.0,
+    bins: int = 30,
+) -> None:
+    """Two-panel histogram of the detected loop relative-pose measurements.
+
+    Left panel:  translation magnitude ||t_detected|| (m)
+    Right panel: rotation angle of R_detected (°)
+
+    Shows the distribution of what the loop closure detector is actually proposing,
+    independent of GT accuracy.
+    """
+    n_variants = len(variant_stats)
+    all_series = variant_stats + baseline_stats
+
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (7.0, 2.5)})
+    fig, (ax_t, ax_r) = plt.subplots(1, 2)
+    t_edges = np.linspace(0, max_trans, bins + 1)
+    r_edges = np.linspace(0, max_rot,   bins + 1)
+
+    for i, (label, records) in enumerate(all_series):
+        is_bl = i >= n_variants
+        t_meas = [r['det_dist']    for r in records]
+        r_meas = [r['det_rot_deg'] for r in records]
+        if not t_meas:
+            continue
+        color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
+        ls = '--' if is_bl else '-'
+        kw = dict(histtype='step', color=color, linestyle=ls,
+                  linewidth=1.0, density=True,
+                  label=f'{label} (n={len(t_meas)})')
+        ax_t.hist(t_meas, bins=t_edges, **kw)
+        ax_r.hist(r_meas, bins=r_edges, **kw)
+
+    ax_t.set_xlabel('Detected Translation (m)')
+    ax_t.set_ylabel('Density')
+    ax_t.legend(fontsize=5, loc='upper right')
+    ax_t.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+
+    ax_r.set_xlabel('Detected Rotation (°)')
+    ax_r.set_ylabel('Density')
+    ax_r.legend(fontsize=5, loc='upper right')
+    ax_r.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+
+    plt.tight_layout()
+    save_fig(fig, out_dir / 'loop_measurement_hist')
+    plt.close(fig)
+    print(f'Loop measurement hist → {out_dir}/loop_measurement_hist.pdf')
 
 
 def plot_outlier_comparison(
@@ -1092,6 +1150,7 @@ def main() -> None:
     if gt_stats_variant or gt_stats_baseline:
         plot_outlier_by_gt(gt_stats_variant, gt_stats_baseline, out_plot_dir)
         plot_loop_error_histograms(gt_stats_variant, gt_stats_baseline, out_plot_dir)
+        plot_loop_measurement_hist(gt_stats_variant, gt_stats_baseline, out_plot_dir)
     else:
         print('  No per-loop data for GT-breakdown plot.')
 
