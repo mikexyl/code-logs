@@ -1,0 +1,28 @@
+# variant_aliases.yaml
+#
+# Maps internal variant / baseline directory names to paper-ready display labels.
+# Used by all multi-variant comparison plots:
+#   evaluate_loops_recall.py  → recall_comparison, outlier_comparison, outlier_by_gt
+#   plot_scalability.py       → scalability, yield, scalability_ate
+#   plot_algebraic_connectivity.py → algebraic_connectivity
+#   plot_loop_rotation_dist.py     → loop_rotation_dist
+#
+# Rules:
+#   - Only variants listed here appear in comparison plots.
+#   - Variants absent from this file are silently skipped.
+#   - If this file does not exist, all variants are shown with their raw names.
+#
+# Edit the display labels on the right; do NOT change the keys on the left
+# (they must match the folder / directory names exactly).
+
+# ── Our method variants ────────────────────────────────────────────────────────
+ns:            "NS"
+ns-as:         "NS+AS"
+ns-as-l:       "NS+AS-L"
+ns-as-vpr:     "NS+AS+VPR"
+ns-ncs-nproj:  "NS (no CS/proj)"
+no-scoring:    "No Scoring"
+mixvpr:        "MixVPR"
+
+# ── Baselines ──────────────────────────────────────────────────────────────────
+Kimera-Multi:  "Kimera-Multi"

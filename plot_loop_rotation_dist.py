@@ -26,7 +26,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import yaml
 
-from utils.io import load_gt_trajectory, load_keyframes_csv, load_loop_closures_csv
+from utils.io import (load_gt_trajectory, load_keyframes_csv, load_loop_closures_csv,
+                      load_variant_aliases, apply_variant_alias)
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
 
 
@@ -209,12 +210,17 @@ def main() -> None:
     variant_data:  list[tuple[str, np.ndarray]] = []
     baseline_data: list[tuple[str, np.ndarray]] = []
 
+    aliases = load_variant_aliases()
+
     if variants:
         print(f'Found {len(variants)} variant(s): {[v.name for v in variants]}')
         for v in variants:
+            disp = apply_variant_alias(aliases, v.name)
+            if disp is None:
+                continue
             r = load_angles_for_dir(v, gt_dir, args.max_gap)
             if r:
-                variant_data.append(r)
+                variant_data.append((disp, r[1]))
     else:
         # Single-experiment fallback
         r = load_angles_for_dir(exp_dir, gt_dir, args.max_gap)
@@ -224,9 +230,12 @@ def main() -> None:
     if baselines:
         print(f'Found {len(baselines)} baseline(s): {[b.name for b in baselines]}')
         for b in baselines:
+            disp = apply_variant_alias(aliases, b.name)
+            if disp is None:
+                continue
             r = load_angles_for_dir(b, gt_dir, args.max_gap)
             if r:
-                baseline_data.append(r)
+                baseline_data.append((disp, r[1]))
 
     all_data = variant_data + baseline_data
     if not all_data:

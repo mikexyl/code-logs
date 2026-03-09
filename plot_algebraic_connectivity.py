@@ -24,7 +24,7 @@ import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
 
-from utils.io import load_keyframes_csv
+from utils.io import load_keyframes_csv, load_variant_aliases, apply_variant_alias
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
 
 _POSE_ID_MULT = 10_000_000   # robot_id * MULT + pose_index → unique integer node ID
@@ -180,6 +180,7 @@ def main() -> None:
         print(f"Error: {folder} does not exist.")
         raise SystemExit(1)
 
+    aliases  = load_variant_aliases()
     variants = discover_variants(folder)
     print(f"Experiment: {folder.name}  (unweighted, inlier loops only)")
     print(f"{'Variant':<22} {'Nodes':>7} {'Edges':>7} {'LC edges':>9} "
@@ -188,7 +189,10 @@ def main() -> None:
 
     labels, values, is_baseline = [], [], []
 
-    for label, vdir, is_bl in variants:
+    for raw_label, vdir, is_bl in variants:
+        label = apply_variant_alias(aliases, raw_label)
+        if label is None:
+            continue
         G = build_graph(vdir)
         if G.number_of_nodes() == 0:
             print(f"{label:<22}  (no keyframe data found — skipped)")

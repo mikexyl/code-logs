@@ -153,6 +153,45 @@ def load_alignment_from_evo_zip(zip_path):
     return np.eye(3), np.zeros(3), 1.0
 
 
+def load_variant_aliases(path=None) -> dict:
+    """Load variant display-name aliases from variant_aliases.yaml.
+
+    Searches in order: explicit path, current working directory, repo root
+    (the directory containing this utils/ package).
+
+    Returns:
+        dict[str, str]: {raw_folder_name: display_label}
+        Empty dict if the file is not found — callers should show all variants
+        with raw names in that case.
+    """
+    import yaml as _yaml
+    candidates = []
+    if path:
+        candidates.append(path)
+    candidates += [
+        os.path.join(os.getcwd(), 'variant_aliases.yaml'),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), 'variant_aliases.yaml'),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            with open(p) as f:
+                data = _yaml.safe_load(f)
+            return {str(k): str(v) for k, v in (data or {}).items()}
+    return {}
+
+
+def apply_variant_alias(aliases: dict, name: str):
+    """Return the display label for a variant name, or None to skip it.
+
+    - If aliases is empty (no config file found): returns name unchanged.
+    - If aliases is non-empty and name is listed: returns aliases[name].
+    - If aliases is non-empty and name is NOT listed: returns None (skip).
+    """
+    if not aliases:
+        return name
+    return aliases.get(name)
+
+
 def load_frame_transform(tf_file):
     """Load an SE3 transform from a JSON/YAML/plain-text file.
 

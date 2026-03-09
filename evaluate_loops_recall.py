@@ -38,7 +38,8 @@ import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import yaml
 
-from utils.io import load_keyframes_csv, load_loop_closures_csv, load_gt_trajectory
+from utils.io import (load_keyframes_csv, load_loop_closures_csv, load_gt_trajectory,
+                      load_variant_aliases, apply_variant_alias)
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
 
 
@@ -943,11 +944,24 @@ def main() -> None:
             r = evaluate_one(b, buckets, bucket_keys, args.tol, **eval_kwargs)
             if r:
                 baseline_results.append(r)
+        # Apply variant aliases / filter for comparison plots
+        aliases = load_variant_aliases()
+        def _alias_results(results):
+            out = []
+            for r in results:
+                disp = apply_variant_alias(aliases, r['label'])
+                if disp is not None:
+                    out.append(dict(r, label=disp))
+            return out
+        plot_var = _alias_results(variant_results)
+        plot_bl  = _alias_results(baseline_results)
+
         all_results = variant_results + baseline_results
-        if len(all_results) >= 2:
-            plot_comparison(variant_results, baseline_results, exp_dir)
-        elif all_results:
-            plot_single(all_results[0], exp_dir)
+        all_plot    = plot_var + plot_bl
+        if len(all_plot) >= 2:
+            plot_comparison(plot_var, plot_bl, exp_dir)
+        elif all_plot:
+            plot_single(all_plot[0], exp_dir)
 
     # ------------------------------------------------------------------
     # Outlier analysis: compare detected relative pose vs GT
@@ -962,6 +976,9 @@ def main() -> None:
     outlier_baseline: list[tuple[str, float, int]] = []
 
     for d in (eval_dirs_variant if not single_mode else [exp_dir]):
+        disp = apply_variant_alias(aliases, d.name)
+        if disp is None:
+            continue
         id_to_name = discover_robots(d)
         result = compute_outlier_ratio(
             d, id_to_name, gt_poses, args.max_gap, args.trans_abs, args.trans_rel, args.rot_thr)
@@ -970,9 +987,12 @@ def main() -> None:
         else:
             ratio, n = result
             print(f'  [{d.name}] outliers {ratio:.3f}  ({int(ratio*n)}/{n})')
-            outlier_variant.append((d.name, ratio, n))
+            outlier_variant.append((disp, ratio, n))
 
     for d in eval_dirs_baseline:
+        disp = apply_variant_alias(aliases, d.name)
+        if disp is None:
+            continue
         id_to_name = discover_robots(d)
         result = compute_outlier_ratio(
             d, id_to_name, gt_poses, args.max_gap, args.trans_abs, args.trans_rel, args.rot_thr)
@@ -981,7 +1001,7 @@ def main() -> None:
         else:
             ratio, n = result
             print(f'  [{d.name}] outliers {ratio:.3f}  ({int(ratio*n)}/{n})')
-            outlier_baseline.append((d.name, ratio, n))
+            outlier_baseline.append((disp, ratio, n))
 
     out_plot_dir = exp_dir
     all_outlier = outlier_variant + outlier_baseline
@@ -996,18 +1016,24 @@ def main() -> None:
     gt_stats_baseline: list[tuple[str, list[dict]]] = []
 
     for d in (eval_dirs_variant if not single_mode else [exp_dir]):
+        disp = apply_variant_alias(aliases, d.name)
+        if disp is None:
+            continue
         id_to_name = discover_robots(d)
         records = collect_outlier_stats(
             d, id_to_name, gt_poses, args.max_gap, args.trans_abs, args.trans_rel, args.rot_thr)
         if records:
-            gt_stats_variant.append((d.name, records))
+            gt_stats_variant.append((disp, records))
 
     for d in eval_dirs_baseline:
+        disp = apply_variant_alias(aliases, d.name)
+        if disp is None:
+            continue
         id_to_name = discover_robots(d)
         records = collect_outlier_stats(
             d, id_to_name, gt_poses, args.max_gap, args.trans_abs, args.trans_rel, args.rot_thr)
         if records:
-            gt_stats_baseline.append((d.name, records))
+            gt_stats_baseline.append((disp, records))
 
     if gt_stats_variant or gt_stats_baseline:
         plot_outlier_by_gt(gt_stats_variant, gt_stats_baseline, out_plot_dir)

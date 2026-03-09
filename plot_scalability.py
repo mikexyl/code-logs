@@ -21,6 +21,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
+from utils.io import load_variant_aliases, apply_variant_alias
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
 
 
@@ -178,9 +179,13 @@ def main() -> None:
     # baselines:             baselines/<exp>/<method>/inlier_loops.csv
     #                        baselines/<exp>/<exp>-<method>_bandwidth.npy
 
+    aliases = load_variant_aliases()
     entries: list[dict] = []   # {label, bw, vals: {bucket: float}, is_baseline}
 
-    def _add_entry(label: str, bw_npy: Path, recall_csv: Path, is_baseline: bool) -> None:
+    def _add_entry(raw: str, bw_npy: Path, recall_csv: Path, is_baseline: bool) -> None:
+        disp = apply_variant_alias(aliases, raw)
+        if disp is None:
+            return
         if not bw_npy.exists():
             return
         bw = _load_bandwidth_mb(bw_npy)
@@ -190,9 +195,9 @@ def main() -> None:
             if v is not None:
                 vals[b] = v
         if not vals:
-            print(f'  [{label}] No recall data — skipping.')
+            print(f'  [{raw}] No recall data — skipping.')
             return
-        entries.append({'label': label, 'bw': bw, 'vals': vals, 'is_baseline': is_baseline})
+        entries.append({'label': disp, 'bw': bw, 'vals': vals, 'is_baseline': is_baseline})
 
     # Variants
     for bw_npy in sorted(folder.glob(f'{exp}-*_bandwidth.npy')):
@@ -316,15 +321,18 @@ def main() -> None:
     # ------------------------------------------------------------------
     yield_entries: list[dict] = []
 
-    def _add_yield_entry(label: str, bw_npy: Path, inlier_csv: Path,
+    def _add_yield_entry(raw: str, bw_npy: Path, inlier_csv: Path,
                          is_baseline: bool) -> None:
+        disp = apply_variant_alias(aliases, raw)
+        if disp is None:
+            return
         if not bw_npy.exists():
             return
         bw = _load_bandwidth_mb(bw_npy)
         n  = _count_inliers(inlier_csv)
         if bw <= 0:
             return
-        yield_entries.append({'label': label, 'bw': bw, 'inliers': n,
+        yield_entries.append({'label': disp, 'bw': bw, 'inliers': n,
                                'yield': n / bw, 'is_baseline': is_baseline})
 
     for bw_npy in sorted(folder.glob(f'{exp}-*_bandwidth.npy')):
@@ -353,16 +361,19 @@ def main() -> None:
     if args.ate:
         ate_entries: list[dict] = []
 
-        def _add_ate_entry(label: str, bw_npy: Path, evo_zip: Path,
+        def _add_ate_entry(raw: str, bw_npy: Path, evo_zip: Path,
                            is_baseline: bool) -> None:
+            disp = apply_variant_alias(aliases, raw)
+            if disp is None:
+                return
             if not bw_npy.exists():
                 return
             bw  = _load_bandwidth_mb(bw_npy)
             ate = _load_ate_rmse(evo_zip)
             if ate is None:
-                print(f'  [{label}] No ATE data — skipping.')
+                print(f'  [{raw}] No ATE data — skipping.')
                 return
-            ate_entries.append({'label': label, 'bw': bw, 'ate': ate,
+            ate_entries.append({'label': disp, 'bw': bw, 'ate': ate,
                                  'is_baseline': is_baseline})
 
         for bw_npy in sorted(folder.glob(f'{exp}-*_bandwidth.npy')):
