@@ -813,8 +813,6 @@ def plot_loop_error_histograms(
     max_trans: float = 5.0,
     max_rot: float = 180.0,
     bins: int = 25,
-    trans_abs: float = 2.0,
-    rot_thr: float = 40.0,
 ) -> None:
     """Two-panel histogram of GT translation + rotation error for ALL detected loops.
 
@@ -843,11 +841,6 @@ def plot_loop_error_histograms(
                   label=f'{label} (n={len(t_errs)})')
         ax_t.hist(t_errs, bins=t_edges, **kw)
         ax_r.hist(r_errs, bins=r_edges, **kw)
-
-    ax_t.axvline(x=trans_abs, color='gray', linestyle=':', linewidth=0.8, alpha=0.7,
-                 label=f'{trans_abs:.0f} m threshold')
-    ax_r.axvline(x=rot_thr,   color='gray', linestyle=':', linewidth=0.8, alpha=0.7,
-                 label=f'{rot_thr:.0f}° threshold')
 
     ax_t.set_xlabel('GT Translation Error (m)')
     ax_t.set_ylabel('Density')
@@ -1098,8 +1091,7 @@ def main() -> None:
 
     if gt_stats_variant or gt_stats_baseline:
         plot_outlier_by_gt(gt_stats_variant, gt_stats_baseline, out_plot_dir)
-        plot_loop_error_histograms(gt_stats_variant, gt_stats_baseline, out_plot_dir,
-                                   trans_abs=args.trans_abs, rot_thr=args.rot_thr)
+        plot_loop_error_histograms(gt_stats_variant, gt_stats_baseline, out_plot_dir)
     else:
         print('  No per-loop data for GT-breakdown plot.')
 
