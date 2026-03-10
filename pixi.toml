@@ -1,0 +1,24 @@
+[workspace]
+name = "code-logs"
+version = "0.1.0"
+description = "Multi-robot pose graph optimization and evaluation toolkit"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.11.*"
+numpy = "*"
+networkx = "*"
+matplotlib = "*"
+scipy = "*"
+rerun-sdk = "0.30.*"
+libstdcxx-ng = ">=14"
+
+[pypi-dependencies]
+evo = "*"
+open3d = "*"
+datafusion = ">=49,<51"
+pyvista = "*"
+
+[tasks]
+build = "mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && make -j$(nproc)"
