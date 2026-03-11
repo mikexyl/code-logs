@@ -429,7 +429,7 @@ def _plot_inlier_lines(ax, data: dict, color: str, is_baseline: bool) -> bool:
 
 def plot_single(data: dict, out_dir: Path) -> None:
     """Single-variant recall curve."""
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.0)})
     fig, ax = plt.subplots()
     color = '#4C72B0'
     ax.plot(data['xs'], data['recalls'], color=color, marker='o', markersize=3, label='recall')
@@ -457,7 +457,7 @@ def plot_comparison(variants: list[dict], baselines: list[dict], out_dir: Path) 
     For each series, also draws inlier recall (dashed/dash-dot) and inlier/PR (dotted)
     if inlier data is available.
     """
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.0)})
     fig, ax = plt.subplots()
     any_inlier_recall = False
     for i, d in enumerate(variants):
@@ -768,7 +768,7 @@ def plot_outlier_by_gt(
     n_baselines = len(baseline_stats)
     all_series  = variant_stats + baseline_stats
 
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (7.0, 2.8)})
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (7.0, 3.9)})
     fig, axes = plt.subplots(1, 2)
     ax_dist, ax_rot = axes[0], axes[1]
 
@@ -819,7 +819,7 @@ def _hist_subplots(
 ) -> None:
     """Shared renderer: per-variant rows × 2 columns of bar histograms, shared x per column."""
     n_rows = len(all_series)
-    row_h  = 1.2
+    row_h  = 2.0
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (7.0, max(2.0, n_rows * row_h))})
     fig, axes = plt.subplots(
         n_rows, 2, sharex='col',
@@ -943,7 +943,7 @@ def plot_outlier_comparison(
     rot_thr: float,
 ) -> None:
     """Bar chart of outlier ratios. Variants solid, baselines hatched."""
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.0)})
     fig, ax = plt.subplots()
 
     all_data = variant_data + baseline_data

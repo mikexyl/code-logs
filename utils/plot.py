@@ -16,7 +16,7 @@ IEEE_RC = {
     'legend.fontsize': 7,
     'xtick.labelsize': 7,
     'ytick.labelsize': 7,
-    'figure.figsize': (3.5, 3.5),
+    'figure.figsize': (3.5, 2.0),
     'figure.dpi': 300,
     'savefig.dpi': 300,
     'axes.linewidth': 0.5,

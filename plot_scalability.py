@@ -79,7 +79,8 @@ def plot_yield(
     is_bl    = [e['is_baseline'] for e in data]
     n        = len(data)
 
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (max(3.5, n * 0.65), 2.8)})
+    _fw = max(3.5, n * 0.65)
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (_fw, _fw * 9 / 16)})
     fig, ax = plt.subplots()
 
     colors = [ROBOT_COLORS[i % len(ROBOT_COLORS)] for i in range(n)]
@@ -238,7 +239,7 @@ def main() -> None:
     bw_span  = worst_bw * 1.15
 
     fig_w = max(3.5, n_panels * 3.0)
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (fig_w, 2.8)})
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (fig_w, fig_w * 9 / 16)})
     fig, axes = plt.subplots(1, n_panels, sharey=False)
     if n_panels == 1:
         axes = [axes]
@@ -416,7 +417,7 @@ def main() -> None:
                     step_xs_ate.append(x); step_ys_ate.append(step_ys_ate[-1])
                     step_xs_ate.append(x); step_ys_ate.append(y)
 
-            plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.8)})
+            plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.0)})
             fig_ate, ax_ate = plt.subplots()
 
             ax_ate.plot(step_xs_ate, step_ys_ate, color='#2ecc71', linewidth=0.8,

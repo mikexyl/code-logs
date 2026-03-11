@@ -226,7 +226,8 @@ def main() -> None:
         return
 
     # Bar chart
-    plt.rcParams.update({**IEEE_RC, "figure.figsize": (max(3.5, len(labels) * 0.75), 2.8)})
+    _fw = max(3.5, len(labels) * 0.75)
+    plt.rcParams.update({**IEEE_RC, "figure.figsize": (_fw, _fw * 9 / 16)})
     fig, ax = plt.subplots()
     x = np.arange(len(labels))
     colors = [ROBOT_COLORS[i % len(ROBOT_COLORS)] for i in range(len(labels))]

@@ -211,7 +211,7 @@ def plot_loops_comparison(paths: list[Path], folder: Path,
 
     plt.rcParams.update(IEEE_RC)
     fig, (ax_counts, ax_ratio) = plt.subplots(
-        2, 1, sharex=True, figsize=(3.5, 3.5),
+        2, 1, sharex=True, figsize=(3.5, 2.0),
     )
     fig.subplots_adjust(hspace=0.08)
 
@@ -367,7 +367,7 @@ def plot_recall_comparison(variant_paths: list[Path], baseline_paths: list[Path]
     bucket_keys = all_data[0][1]["bucket_keys"]
     xs = [bmax for _, bmax in bucket_keys]
 
-    plt.rcParams.update({**IEEE_RC, "figure.figsize": (3.5, 2.8)})
+    plt.rcParams.update({**IEEE_RC, "figure.figsize": (3.5, 2.0)})
     fig, ax = plt.subplots()
 
     for i, (p, d) in enumerate(variant_data):

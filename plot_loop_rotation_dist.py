@@ -254,7 +254,7 @@ def main() -> None:
 
     # Plot — one subplot per method, stacked vertically, shared x-axis
     n_rows = len(all_data)
-    row_h  = 1.3
+    row_h  = 2.0
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, max(2.0, n_rows * row_h))})
     fig, axes = plt.subplots(n_rows, 1, sharex=True,
                              gridspec_kw={'hspace': 0.15})
