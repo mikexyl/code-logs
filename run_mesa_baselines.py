@@ -25,7 +25,7 @@ from pathlib import Path
 DOCKER_IMAGE = "mesa-baselines"
 RUNNER = "/mesa_ws/mesa/build/experiments/run-dist-batch"
 
-DEFAULT_METHODS = ["dgs", "geodesic-mesa"]
+DEFAULT_METHODS = ["dgs", "asapp", "geodesic-mesa"]
 
 
 # ---------------------------------------------------------------------------
