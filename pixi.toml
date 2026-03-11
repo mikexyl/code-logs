@@ -13,6 +13,7 @@ matplotlib = "*"
 scipy = "*"
 rerun-sdk = "0.30.*"
 libstdcxx-ng = ">=14"
+gtsam = "*"
 
 [pypi-dependencies]
 evo = "*"

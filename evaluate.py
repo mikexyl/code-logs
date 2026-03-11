@@ -232,6 +232,10 @@ def find_trajectory_pairs(experiment_folder, gt_folder=None, gt_exp_name=None):
     is correct for top-level experiments.  Pass the parent experiment name
     when evaluating a variant subfolder (e.g. 'campus' for 'campus/all/').
 
+    Sub-directories that are themselves variants (i.e. contain robot dirs) are
+    skipped so that nested lm_optimized / other sub-variant TUM files are not
+    mixed into the parent evaluation.
+
     Returns a list of dicts with keys: robot_path, gt_path, timestamp.
     """
     pairs = []
@@ -239,6 +243,18 @@ def find_trajectory_pairs(experiment_folder, gt_folder=None, gt_exp_name=None):
         gt_exp_name = os.path.basename(experiment_folder)
 
     for root, dirs, files in os.walk(experiment_folder):
+        # Prune variant sub-directories: skip any child dir that is itself a
+        # variant (i.e. contains robot dirs inside it).  This prevents TUM
+        # files from nested lm_optimized/ or other sub-variants being mixed
+        # into the parent evaluation.
+        dirs[:] = [
+            d for d in dirs
+            if not any(
+                _is_robot_dir(sub)
+                for sub in (Path(root) / d).iterdir()
+                if sub.is_dir()
+            )
+        ]
         for file in files:
             if file.startswith("Robot ") and file.endswith(".tum"):
                 robot_path = os.path.join(root, file)
@@ -455,20 +471,24 @@ def main():
     exp_dir = Path(experiment_folder)
     variants = discover_variants(exp_dir)
 
+    gt_exp_name = args.gt_exp_name if args.gt_exp_name else exp_dir.name
+    if gt_folder:
+        print(f"Ground truth root: {gt_folder}")
+        print(f"  -> using subfolder: {os.path.join(gt_folder, gt_exp_name)}")
+
     if variants:
         print(f"Found {len(variants)} variant(s): {[v.name for v in variants]}")
-        # GT is keyed by the parent experiment name (e.g. 'campus'), not the variant name
-        gt_exp_name = args.gt_exp_name if args.gt_exp_name else exp_dir.name
-        if gt_folder:
-            print(f"Ground truth root: {gt_folder}")
-            print(f"  -> using subfolder: {os.path.join(gt_folder, gt_exp_name)}")
+        # If the experiment folder itself also has direct trajectory pairs
+        # (i.e. it is both a variant and a container of sub-variants, e.g. when
+        # lm_optimized sits alongside the original robot dirs), evaluate it too.
+        direct_pairs = find_trajectory_pairs(
+            experiment_folder, gt_folder=gt_folder, gt_exp_name=gt_exp_name
+        )
+        if direct_pairs:
+            run_evaluation(experiment_folder, gt_folder, gt_exp_name, args.tf_file)
         for v in variants:
             run_evaluation(str(v), gt_folder, gt_exp_name, args.tf_file)
     else:
-        gt_exp_name = args.gt_exp_name if args.gt_exp_name else exp_dir.name
-        if gt_folder:
-            print(f"Ground truth root: {gt_folder}")
-            print(f"  -> using subfolder: {os.path.join(gt_folder, gt_exp_name)}")
         run_evaluation(experiment_folder, gt_folder, gt_exp_name, args.tf_file)
 
 
