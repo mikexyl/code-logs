@@ -1,3 +1,6 @@
 [submodule "third_party/cartan-sync"]
 	path = third_party/cartan-sync
 	url = https://gitlab.com/jbriales/cartan-sync.git
+[submodule "third_party/mesa"]
+	path = third_party/mesa
+	url = https://github.com/mikexyl/mesa.git
