@@ -24,7 +24,9 @@ from pathlib import Path
 import numpy as np
 import gtsam
 from gtsam import (
-    LevenbergMarquardtOptimizer,
+    GncLMOptimizer,
+    GncLMParams,
+    GncLossType,
     LevenbergMarquardtParams,
     NonlinearFactorGraph,
     Pose3,
@@ -101,63 +103,97 @@ def load_and_merge(
 
 
 # ---------------------------------------------------------------------------
+# Initialize poses via rotation averaging
+# ---------------------------------------------------------------------------
+
+def initialize_poses(graph: NonlinearFactorGraph, odometry_values: Values) -> Values:
+    """
+    Use InitializePose3 (chordal rotation averaging) to get a good initial
+    estimate from the full graph (odometry + inter-robot loops).  This is
+    critical for GNC: raw odometry initial values yield inter-robot residuals
+    of O(1e4), causing GNC-TLS to reject all loops as outliers.  After
+    InitializePose3 the residuals drop to O(1), enabling correct inlier/outlier
+    classification.
+
+    Falls back to odometry_values if initialization fails (e.g. underconstrained graph).
+    """
+    print("  Running InitializePose3 (chordal, full pose)...")
+    try:
+        # Pin the first pose to fix gauge freedom, then run full pose initialization
+        graph_with_prior = NonlinearFactorGraph(graph)
+        first_key = sorted(odometry_values.keys())[0]
+        prior_noise = gtsam.noiseModel.Diagonal.Sigmas(np.full(6, 1e-6))
+        graph_with_prior.push_back(
+            PriorFactorPose3(first_key, odometry_values.atPose3(first_key), prior_noise)
+        )
+        initialized = gtsam.InitializePose3.initialize(graph_with_prior, odometry_values, False)
+    except RuntimeError as e:
+        print(f"  InitializePose3 failed ({e}); falling back to odometry initial values")
+        return odometry_values
+
+    # Diagnostics: inter-robot residuals after init
+    inter_errors = []
+    for i in range(graph.size()):
+        fac = graph.at(i)
+        if not isinstance(fac, gtsam.BetweenFactorPose3):
+            continue
+        k1, k2 = fac.keys()[0], fac.keys()[1]
+        if gtsam.symbolChr(k1) != gtsam.symbolChr(k2):
+            if initialized.exists(k1) and initialized.exists(k2):
+                inter_errors.append(fac.error(initialized))
+    if inter_errors:
+        arr = np.array(inter_errors)
+        print(
+            f"  Inter-robot errors after init: "
+            f"median={np.median(arr):.2f}  mean={arr.mean():.2f}  max={arr.max():.2f}"
+        )
+    return initialized
+
+
+# ---------------------------------------------------------------------------
 # Optimize
 # ---------------------------------------------------------------------------
 
-def _wrap_huber(factor: gtsam.BetweenFactorPose3, huber_k: float) -> gtsam.BetweenFactorPose3:
-    """Return a copy of factor with its noise model wrapped in a Huber kernel."""
-    huber = gtsam.noiseModel.Robust.Create(
-        gtsam.noiseModel.mEstimator.Huber.Create(huber_k),
-        factor.noiseModel(),
-    )
-    return gtsam.BetweenFactorPose3(factor.keys()[0], factor.keys()[1], factor.measured(), huber)
-
-
-def build_robust_graph(
-    graph: NonlinearFactorGraph,
-    huber_k: float,
-) -> NonlinearFactorGraph:
+def optimize(graph: NonlinearFactorGraph, initial: Values) -> Values:
     """
-    Return a new graph where inter-robot loop closure edges are wrapped with a
-    Huber robust kernel (threshold huber_k) and intra-robot edges are kept as-is.
+    Add a prior on the first pose to fix gauge freedom, then run GNC-LM.
+    Intra-robot odometry edges are marked as known inliers so GNC only
+    applies its reweighting to inter-robot loop closure edges.
     """
-    robust_graph = NonlinearFactorGraph()
-    n_intra, n_inter = 0, 0
-    for i in range(graph.size()):
-        factor = graph.at(i)
-        if not isinstance(factor, gtsam.BetweenFactorPose3):
-            robust_graph.push_back(factor)
-            continue
-        k1, k2 = factor.keys()[0], factor.keys()[1]
-        if gtsam.symbolChr(k1) != gtsam.symbolChr(k2):
-            robust_graph.push_back(_wrap_huber(factor, huber_k))
-            n_inter += 1
-        else:
-            robust_graph.push_back(factor)
-            n_intra += 1
-    print(f"  Intra-robot edges: {n_intra} (unchanged)")
-    print(f"  Inter-robot edges: {n_inter} (Huber k={huber_k})")
-    return robust_graph
-
-
-def optimize(graph: NonlinearFactorGraph, initial: Values, huber_k: float) -> Values:
-    """
-    Add a prior on the first pose to fix gauge freedom, wrap inter-robot edges
-    with a Huber robust kernel, then run Levenberg-Marquardt.
-    """
-    robust_graph = build_robust_graph(graph, huber_k)
-
+    graph_with_prior = NonlinearFactorGraph(graph)
     first_key = sorted(initial.keys())[0]
     prior_noise = gtsam.noiseModel.Diagonal.Sigmas(np.full(6, 1e-6))
-    robust_graph.push_back(
+    graph_with_prior.push_back(
         PriorFactorPose3(first_key, initial.atPose3(first_key), prior_noise)
     )
 
-    print(f"  Initial error: {robust_graph.error(initial):.6f}")
-    params = LevenbergMarquardtParams()
-    params.setVerbosity("SUMMARY")
-    result = LevenbergMarquardtOptimizer(robust_graph, initial, params).optimize()
-    print(f"  Final error:   {robust_graph.error(result):.6f}")
+    # Mark all intra-robot edges as known inliers
+    known_inliers: list[int] = []
+    n_intra, n_inter = 0, 0
+    for i in range(graph_with_prior.size()):
+        factor = graph_with_prior.at(i)
+        if not isinstance(factor, gtsam.BetweenFactorPose3):
+            known_inliers.append(i)   # prior factor — always inlier
+            continue
+        k1, k2 = factor.keys()[0], factor.keys()[1]
+        if gtsam.symbolChr(k1) == gtsam.symbolChr(k2):
+            known_inliers.append(i)
+            n_intra += 1
+        else:
+            n_inter += 1
+    print(f"  Intra-robot edges: {n_intra} (known inliers)")
+    print(f"  Inter-robot edges: {n_inter} (GNC-reweighted)")
+
+    lm_params = LevenbergMarquardtParams()
+    lm_params.setVerbosity("SILENT")
+    params = GncLMParams(lm_params)
+    params.setLossType(GncLossType.GM)
+    params.setKnownInliers(known_inliers)
+    params.setVerbosityGNC(GncLMParams.Verbosity.SUMMARY)
+
+    print(f"  Initial error: {graph_with_prior.error(initial):.6f}")
+    result = GncLMOptimizer(graph_with_prior, initial, params).optimize()
+    print(f"  Final error:   {graph_with_prior.error(result):.6f}")
     return result
 
 
@@ -309,10 +345,6 @@ def main() -> None:
         help="Experiment folder (auto-discovers bpsam_robot_*.g2o) or explicit .g2o files.",
     )
     parser.add_argument(
-        "--huber_k", type=float, default=1.345,
-        help="Huber loss threshold for inter-robot loop closure edges (default: 1.345).",
-    )
-    parser.add_argument(
         "--out_dir", "-o", type=Path, default=None,
         help=(
             "Output directory (default: <folder>/lm_optimized/ for folder input). "
@@ -357,8 +389,11 @@ def main() -> None:
     for robot_chr, count in sorted(per_robot.items()):
         print(f"  Robot '{robot_chr}': {count} poses")
 
-    print("\n=== Optimizing (Levenberg-Marquardt + Huber) ===")
-    optimized = optimize(graph, values, args.huber_k)
+    print("\n=== Initializing poses (rotation averaging) ===")
+    initial = initialize_poses(graph, values)
+
+    print("\n=== Optimizing (GNC-LM) ===")
+    optimized = optimize(graph, initial)
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
