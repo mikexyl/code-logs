@@ -31,7 +31,8 @@ METHODS = ["dgs", "asapp", "geodesic-mesa", "centralized"]
 
 ATE_CSV = Path(__file__).parent / "ate_results.csv"
 ATE_FIELDNAMES = ["experiment", "variant", "method",
-                  "ate_rmse", "ate_mean", "ate_median", "ate_std", "ate_min", "ate_max"]
+                  "ate_rmse", "ate_mean", "ate_median", "ate_std", "ate_min", "ate_max",
+                  "total_comm_rounds", "total_bytes_communicated"]
 
 
 # ---------------------------------------------------------------------------
@@ -222,14 +223,45 @@ def run_evo_ape(gt_tum: Path, est_tum: Path, out_dir: Path, label: str) -> dict 
     return None
 
 
-def update_ate_csv(experiment: str, variant: str, method: str, stats: dict) -> None:
+def read_comm_stats(method_dir: Path) -> tuple[int, int] | tuple[None, None]:
+    """Read total communication rounds and bytes from the latest iter_time_comm.txt.
+
+    Returns (total_rounds, total_bytes) from the last data line, or (None, None) if unavailable.
+    The file has 3 columns (pre-bytes tracking) or 4 columns (post-bytes tracking).
+    """
+    candidates = sorted(method_dir.glob("*/iter_time_comm.txt"))
+    if not candidates:
+        return None, None
+    txt = candidates[-1]  # newest run
+    last_data = None
+    for line in txt.read_text().splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        last_data = line.split()
+    if last_data is None:
+        return None, None
+    try:
+        total_rounds = int(last_data[2])
+        total_bytes = int(last_data[3]) if len(last_data) >= 4 else None
+        return total_rounds, total_bytes
+    except (IndexError, ValueError):
+        return None, None
+
+
+def update_ate_csv(experiment: str, variant: str, method: str, stats: dict,
+                   total_comm_rounds: int | None = None,
+                   total_bytes_communicated: int | None = None) -> None:
     """Insert or update a row in ate_results.csv."""
     rows = []
     key = (experiment, variant, method)
     if ATE_CSV.exists():
         with open(ATE_CSV, newline="") as f:
-            rows = list(csv.DictReader(f))
+            reader = csv.DictReader(f)
+            existing_fields = reader.fieldnames or []
+            rows = list(reader)
         rows = [r for r in rows if (r["experiment"], r["variant"], r["method"]) != key]
+    else:
+        existing_fields = []
     row = {
         "experiment": experiment,
         "variant": variant,
@@ -240,11 +272,13 @@ def update_ate_csv(experiment: str, variant: str, method: str, stats: dict) -> N
         "ate_std":    round(stats.get("std",    float("nan")), 4),
         "ate_min":    round(stats.get("min",    float("nan")), 4),
         "ate_max":    round(stats.get("max",    float("nan")), 4),
+        "total_comm_rounds": total_comm_rounds if total_comm_rounds is not None else "",
+        "total_bytes_communicated": total_bytes_communicated if total_bytes_communicated is not None else "",
     }
     rows.append(row)
     rows.sort(key=lambda r: (r["experiment"], r["variant"], r["method"]))
     with open(ATE_CSV, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=ATE_FIELDNAMES)
+        writer = csv.DictWriter(f, fieldnames=ATE_FIELDNAMES, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -315,15 +349,19 @@ def evaluate_variant(variant_dir: Path, gt_dir: Path, methods: list[str],
     print("\n" + "="*50)
     print(f"ATE RMSE Summary — {csv_exp}/{csv_variant}")
     print("="*50)
-    print(f"{'Method':<20} {'ATE RMSE (m)':>14}")
-    print("-"*36)
+    print(f"{'Method':<20} {'ATE RMSE (m)':>14} {'Rounds':>10} {'Bytes':>14}")
+    print("-"*60)
     for method in methods:
         s = results.get(method)
+        method_dir = mesa_dir / method
+        rounds, nbytes = read_comm_stats(method_dir) if method_dir.exists() else (None, None)
+        rounds_str = str(rounds) if rounds is not None else "N/A"
+        bytes_str = str(nbytes) if nbytes is not None else "N/A"
         if s is not None:
-            print(f"{method:<20} {s.get('rmse', float('nan')):>14.4f}")
-            update_ate_csv(csv_exp, csv_variant, method, s)
+            print(f"{method:<20} {s.get('rmse', float('nan')):>14.4f} {rounds_str:>10} {bytes_str:>14}")
+            update_ate_csv(csv_exp, csv_variant, method, s, rounds, nbytes)
         else:
-            print(f"{method:<20} {'N/A':>14}")
+            print(f"{method:<20} {'N/A':>14} {rounds_str:>10} {bytes_str:>14}")
     print("="*50)
     print(f"  Updated {ATE_CSV}")
 
