@@ -25,6 +25,8 @@ The binary is `build/optimize_offline`. **Note:** it hardcodes the base path `/w
 
 ## Full Analysis Pipeline
 
+A `/full-analysis` custom command is available (`.claude/commands/full-analysis.md`) that encodes the full pipeline steps. Run via `/full-analysis <exp> [gt_folder]` in Claude Code.
+
 Run in this order for a complete evaluation of experiment `<exp>` (e.g. `campus`, `a5678`):
 
 ```bash
@@ -153,6 +155,34 @@ python3 plot_ablation.py <folder>
 ```
 Scans `<folder>` and `baselines/<folder.name>/` for `*_bandwidth.npy` and `*_loops.npy` files. Each file stem becomes a labelled series on a shared axis. Also auto-discovers variant sub-folders with `loops_recall.csv` and plots a `recall_comparison`.
 
+### run_mesa_baselines.py — run MESA baseline methods
+```bash
+python3 run_mesa_baselines.py <experiment_folder> [--methods dgs mbadmm geodesic-mesa]
+python3 run_mesa_baselines.py g2345/ns-as
+python3 run_mesa_baselines.py g2345   # discovers all variants
+```
+Auto-discovers per-robot g2o files, merges them, converts to JRL format via `g2o_to_jrl.py`, then runs each method (dgs, asapp, geodesic-mesa) via the `mesa-baselines` Docker image. Results land in `<exp>/mesa_baselines/<variant>/<method>/`.
+
+### g2o_to_jrl.py — convert g2o to JRL format for MESA
+```bash
+python3 g2o_to_jrl.py robot0.g2o [robot1.g2o ...] -o output.jrl [-n name]
+python3 g2o_to_jrl.py folder/*/dpgo/bpsam_robot_*.g2o -o dataset.jrl
+```
+Preserves per-robot variable assignment from GTSAM Symbol keys. Adds gauge-freedom priors on each robot's first pose.
+
+### evaluate_mesa_baselines.py — ATE for MESA results
+```bash
+python3 evaluate_mesa_baselines.py <variant_folder> [--gt_folder ground_truth]
+python3 evaluate_mesa_baselines.py g2345/ns-as --gt_exp_name g2345
+```
+Decodes `final_results.jrr.cbor` outputs from MESA methods, matches timestamps from original TUM files by pose index, runs `evo_ape`, and updates `ate_results.csv`. Methods: dgs, asapp, geodesic-mesa, centralized.
+
+### run_all_evaluations.py — batch ATE evaluation across all datasets
+```bash
+python3 run_all_evaluations.py [--skip_optimize] [--skip_evaluate] [--output ate_results.csv]
+```
+Runs global LM+Huber optimization and ATE evaluation across all configured datasets/variants, collecting results into a single CSV.
+
 ### plot_baseline.py — Kimera-Multi baseline stats
 ```bash
 python3 plot_baseline.py baselines/campus [--ate] [--gt_folder ground_truth]
@@ -227,6 +257,8 @@ Kimera-Multi baselines live under `baselines/<experiment>/Kimera-Multi/<robot>/`
 **`inlier_loops.csv`**: written by `evaluate_loops_recall.py` per variant, contains `name1, t1_s, name2, t2_s` for each inlier loop closure. Consumed by `plot_algebraic_connectivity.py`. Must re-run `evaluate_loops_recall.py` before `plot_algebraic_connectivity.py` whenever the inlier criterion changes.
 
 **Inlier/outlier threshold**: `trans_err ≤ max(trans_abs, trans_rel × gt_dist)` where defaults are `trans_abs=2.0 m`, `trans_rel=0.10` (10%). Rotation threshold: `rot_thr=40°`.
+
+**`variant_aliases.yaml`**: maps internal variant/baseline directory names to paper-ready display labels. Only variants listed here appear in multi-variant comparison plots (recall, outlier, scalability, connectivity, rotation dist). If the file is absent, all variants are shown with raw names. Keys must exactly match directory names.
 
 **Variant auto-discovery pattern** (used by `evaluate.py`, `evaluate_loops_recall.py`, `plot_ablation.py`, `plot_loop_rotation_dist.py`): a sub-directory is a variant if it contains at least one robot dir (a dir with `distributed/` or `dpgo/` inside). Baselines are auto-discovered from `baselines/<exp_name>/*/` using the same robot-dir check.
 
