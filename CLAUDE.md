@@ -170,12 +170,16 @@ python3 g2o_to_jrl.py folder/*/dpgo/bpsam_robot_*.g2o -o dataset.jrl
 ```
 Preserves per-robot variable assignment from GTSAM Symbol keys. Adds gauge-freedom priors on each robot's first pose.
 
-### evaluate_mesa_baselines.py — ATE for MESA results
+### evaluate_mesa_baselines.py — ATE for MESA + CBS/CBS+ results
 ```bash
 python3 evaluate_mesa_baselines.py <variant_folder> [--gt_folder ground_truth]
 python3 evaluate_mesa_baselines.py g2345/ns-as --gt_exp_name g2345
 ```
-Decodes `final_results.jrr.cbor` outputs from MESA methods, matches timestamps from original TUM files by pose index, runs `evo_ape`, and updates `ate_results.csv`. Methods: dgs, asapp, geodesic-mesa, centralized.
+Two evaluation paths in one script:
+
+**MESA methods** (dgs, asapp, geodesic-mesa, centralized): decodes `final_results.jrr.cbor`, matches timestamps from original `Robot N.tum` files by pose index, runs `evo_ape`, updates `ate_results.csv`. Reads convergence stats from `iter_time_comm.txt` — the `Iteration` column is total synchronous algorithm rounds (each round involves all robots simultaneously). `TotalCommunications` counts individual robot messages (= iterations × n_robots).
+
+**CBS/CBS+ DPGO variants**: auto-discovered from `<variant>/cbs/` and `<variant>/cbs_plus/` dirs. For ATE, reads the **last non-empty** `Robot <N>_<ts>.tum` file per robot (highest timestamp suffix) directly — these already contain real timestamps, no pose-index remapping needed. For comm stats, reads `stats_robot_*.csv` per robot and sums `bytes_sent` at the final row. Reports total synchronous rounds = last `iteration` value in the stats CSV (not multiplied by n_robots). CBS residuals are non-monotonic (start near 0, rise as edges are added, then oscillate) so 1%-of-final convergence detection is not used.
 
 ### run_all_evaluations.py — batch ATE evaluation across all datasets
 ```bash
@@ -188,6 +192,16 @@ Runs global LM+Huber optimization and ATE evaluation across all configured datas
 python3 plot_baseline.py baselines/campus [--ate] [--gt_folder ground_truth]
 ```
 Reads `lcd_log.csv` from each robot's `distributed/` dir, plots BoW matches and loop-closure counts over time. With `--ate`, runs `evo_ape` against GT.
+
+### plot_loop_errors_map.py — trajectory map with loop closures colored by error
+```bash
+python3 plot_loop_errors_map.py <variant_dir> <gt_dir>
+python3 plot_loop_errors_map.py campus/ns-as ground_truth/campus
+python3 plot_loop_errors_map.py campus/ns-as ground_truth/campus --max_err 15
+```
+Plots aligned robot trajectories with inter-robot loop closure lines colored by translation error vs ground truth (RdYlGn_r colormap: green = low error, red = high error). Requires `evo_ape.zip` for alignment, `distributed/kimera_distributed_keyframes.csv` and `loop_closures.csv` (with `tx,ty,tz,qx,qy,qz,qw` fields) per robot, and GT trajectory files in `<gt_dir>`.
+
+Key option: `--max_err` sets the colorbar maximum in metres (default 20). Saves `loop_errors_map.pdf/png`.
 
 ### plot_g2o.py — pose graph visualization
 ```bash
@@ -220,8 +234,16 @@ plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.5)})
 │   │       ├── kimera_distributed_keyframes.csv   # pose_index → timestamp_ns
 │   │       ├── loop_closures.csv                  # inter-robot loop pairs + relative pose
 │   │       └── lcd_log.csv                        # BoW/VLC byte counts over time
+│   ├── cbs/                         # CBS DPGO variant output
+│   │   └── <robot_dir>/
+│   │       └── dpgo/
+│   │           ├── cbs_robot_<N>_<ts>.g2o         # intermediate g2o snapshots
+│   │           ├── Robot <N>_<ts>.tum             # trajectory snapshots (last = final)
+│   │           └── stats_robot_<N>.csv            # per-iteration residual + bytes_sent
+│   ├── cbs_plus/                    # CBS+ DPGO variant (same structure as cbs/)
 │   ├── evo_ape.zip / evo_rpe.zip
 │   ├── trajectories_aligned*.pdf/png
+│   ├── loop_errors_map.pdf/png      # loop lines colored by GT translation error
 │   ├── loops_recall.csv/txt
 │   └── loops_recall.pdf/png
 ├── recall_comparison.pdf/png        # multi-variant comparison
@@ -267,3 +289,9 @@ Kimera-Multi baselines live under `baselines/<experiment>/Kimera-Multi/<robot>/`
 **GT loop closure parameters used on real datasets**:
 - UAV (a5678): `--dist-xy 10 --dist-z 25 --min-z 15 --angles 10..60 --tol 5`
 - Ground (campus, gate): `--dist-xy 10 --dist-z 25` (no `--min-z`), same angles/tol
+
+**CBS/CBS+ TUM file naming**: files are named `Robot <N>_<unix_ts>.tum` where the suffix is a Unix timestamp of when the snapshot was written. Multiple snapshots accumulate per run. The **last** file (highest suffix, non-empty) is the final trajectory. `evaluate_mesa_baselines.py` always picks this file for ATE evaluation. Empty TUM files (size 0) are skipped — they indicate a snapshot was started but not yet written.
+
+**CBS/CBS+ iteration counting**: `stats_robot_<N>.csv` rows are per-robot iterations of the synchronous ADMM-like algorithm. All robots run in lockstep, so the `iteration` column is the same as the number of synchronous rounds. `bytes_sent` is cumulative. The reported `iterations_1pct` in `ate_results.csv` is the final iteration count (total rounds run), not a convergence threshold — CBS residuals start near zero, rise as loop edges are added, then oscillate rather than monotonically decreasing, making 1%-of-final detection unreliable.
+
+**Iteration count comparability (MESA vs CBS)**: both express iterations as synchronous algorithm rounds (all robots participate each round). MESA's `TotalCommunications` = iterations × n_robots (total individual messages); its `Iteration` column = synchronous rounds. CBS's `iteration` column = synchronous rounds directly. Do not multiply CBS iterations by n_robots — they are already in the same unit as MESA's `Iteration`.
