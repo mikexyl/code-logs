@@ -314,7 +314,7 @@ def main():
     # Single shared legend at bottom (collect from top panel which has all entries)
     handles, labels = ax_km.get_legend_handles_labels()
     fig.legend(handles, labels, loc='lower center',
-               bbox_to_anchor=(0.5, 0.06), ncol=len(handles),
+               bbox_to_anchor=(0.5, 0.04), ncol=len(handles),
                framealpha=0.9, edgecolor='none',
                handlelength=1.2, handletextpad=0.4, columnspacing=1.0,
                fontsize=8)
