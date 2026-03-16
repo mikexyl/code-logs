@@ -307,9 +307,9 @@ def main():
     _draw_panel(ax_km,   km_trajs,   km_gt,   km_loops,   'Kimera-Multi')
     _draw_panel(ax_ours, ours_trajs, ours_gt, ours_loops, 'Ours')
 
-    ax_ours.set_xlabel('X (m)')
+    ax_ours.set_xlabel('x (m)')
     for ax in (ax_km, ax_ours):
-        ax.set_ylabel('Y (m)')
+        ax.set_ylabel('y (m)')
 
     # Single shared legend at bottom (collect from top panel which has all entries)
     handles, labels = ax_km.get_legend_handles_labels()
@@ -321,8 +321,9 @@ def main():
 
     plt.setp(ax_km.get_xticklabels(), visible=False)
     ax_km.tick_params(axis='x', length=0)
-    plt.tight_layout(pad=0.3, h_pad=0.0)
-    plt.subplots_adjust(bottom=0.08, hspace=0.0)
+    plt.tight_layout(pad=0.3)
+    # Collapse vertical gap left by equal-aspect axes
+    fig.subplots_adjust(bottom=0.08, hspace=-0.25)
 
     out = _abs(args.output) if args.output else ours_dir.parent / 'combined_traj'
     save_fig(fig, out)
