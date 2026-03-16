@@ -20,7 +20,7 @@ ns-as:         "Ours"
 ns-ncs-nproj:  "w.o. Aug"
 ns:            "w.o. AS"
 # ns-as-l:       "NS+AS-L"
-# ns-as-vpr:     "NS+AS+VPR"
+ns-as-vpr:     "NS+AS+VPR"
 mixvpr:        "MixVPR"
 
 # ── Baselines ──────────────────────────────────────────────────────────────────
