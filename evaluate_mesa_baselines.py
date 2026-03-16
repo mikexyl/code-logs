@@ -44,15 +44,20 @@ ATE_FIELDNAMES = ["experiment", "variant", "method",
 # ---------------------------------------------------------------------------
 
 def build_robot_map(variant_dir: Path) -> dict[str, dict]:
-    """Return {robot_char: {'tum': Path, 'robot_id': int}} by loading g2o files."""
+    """Return {robot_char: {'tum': Path, 'robot_id': int}} by loading g2o files.
+
+    Supports two layouts:
+      Old: */dpgo/bpsam_robot_<id>.g2o  →  Robot <id>.tum
+      New: */dpgo/cbs_robot_<id>_<ts>.g2o (latest)  →  Robot <id>_<ts>.tum (latest)
+    """
     robot_map: dict[str, dict] = {}
+
+    # Old layout
     for g2o_path in sorted(variant_dir.glob("*/dpgo/bpsam_robot_*.g2o")):
         robot_id = int(g2o_path.stem.split("_")[-1])
         expected_char = chr(ord('a') + robot_id)
-        # Find Robot N.tum in the same dpgo dir
         tum_path = g2o_path.parent / f"Robot {robot_id}.tum"
         if not tum_path.exists():
-            # Try any Robot *.tum
             candidates = sorted(g2o_path.parent.glob("Robot *.tum"))
             tum_path = candidates[0] if candidates else None
         if tum_path is None:
@@ -61,8 +66,41 @@ def build_robot_map(variant_dir: Path) -> dict[str, dict]:
         robot_map[expected_char] = {
             'tum': tum_path,
             'robot_id': robot_id,
-            'robot_dir': g2o_path.parent.parent,  # e.g. g2345/ns-as/g2
+            'robot_dir': g2o_path.parent.parent,
         }
+
+    if robot_map:
+        return robot_map
+
+    # New layout: cbs_robot_<id>_<ts>.g2o — pick latest per robot
+    latest_g2o: dict[int, tuple[int, Path]] = {}
+    for g2o_path in variant_dir.glob("*/dpgo/cbs_robot_*.g2o"):
+        parts = g2o_path.stem.split("_")
+        try:
+            robot_id, ts = int(parts[2]), int(parts[3])
+        except (IndexError, ValueError):
+            continue
+        if robot_id not in latest_g2o or ts > latest_g2o[robot_id][0]:
+            latest_g2o[robot_id] = (ts, g2o_path)
+
+    for robot_id, (ts, g2o_path) in sorted(latest_g2o.items()):
+        expected_char = chr(ord('a') + robot_id)
+        dpgo = g2o_path.parent
+        # Pick latest non-empty Robot <id>_<ts>.tum
+        candidates = sorted(
+            [p for p in dpgo.glob(f"Robot {robot_id}_*.tum") if p.stat().st_size > 0],
+            key=lambda p: int(p.stem.split("_")[-1])
+        )
+        tum_path = candidates[-1] if candidates else None
+        if tum_path is None:
+            print(f"  Warning: no TUM file found for robot {robot_id}, skipping")
+            continue
+        robot_map[expected_char] = {
+            'tum': tum_path,
+            'robot_id': robot_id,
+            'robot_dir': g2o_path.parent.parent,
+        }
+
     return robot_map
 
 

@@ -255,7 +255,34 @@ def find_trajectory_pairs(experiment_folder, gt_folder=None, gt_exp_name=None):
                 if sub.is_dir()
             )
         ]
-        for file in files:
+        # Deduplicate timestamped snapshots: for Robot <id>_<ts>.tum keep only
+        # the latest non-empty file per robot ID in this directory.
+        tum_files = [f for f in files if f.startswith("Robot ") and f.endswith(".tum")]
+        latest_tum: dict[str, str] = {}  # robot_id_str → filename
+        for f in tum_files:
+            stem = f[:-4]  # strip .tum
+            parts = stem.split("_")
+            # "Robot N" → no underscore in id; "Robot N_ts" → parts[-1] is ts
+            # Extract robot id as the token after "Robot "
+            robot_id_str = stem[len("Robot "):]  # e.g. "0" or "0_1773654443"
+            base_id = robot_id_str.split("_")[0]  # e.g. "0"
+            existing = latest_tum.get(base_id)
+            if existing is None:
+                latest_tum[base_id] = f
+            else:
+                # Compare by timestamp suffix if present, else keep existing
+                def _ts(fname):
+                    s = fname[:-4][len("Robot "):].split("_")
+                    return int(s[1]) if len(s) > 1 else -1
+                if _ts(f) > _ts(existing):
+                    latest_tum[base_id] = f
+        # Only keep non-empty latest files
+        deduped_files = [
+            f for f in latest_tum.values()
+            if os.path.getsize(os.path.join(root, f)) > 0
+        ]
+
+        for file in deduped_files:
             if file.startswith("Robot ") and file.endswith(".tum"):
                 robot_path = os.path.join(root, file)
 

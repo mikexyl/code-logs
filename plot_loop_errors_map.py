@@ -136,8 +136,7 @@ def collect_loop_data(
         for lc in load_loop_closures_csv(str(lc_path)):
             r1, p1i = lc['robot1'], lc['pose1']
             r2, p2i = lc['robot2'], lc['pose2']
-            if r1 == r2:
-                continue
+            is_intra = (r1 == r2)
             key = frozenset([(r1, p1i), (r2, p2i)])
             if key in seen:
                 continue
@@ -198,6 +197,7 @@ def collect_loop_data(
                 'p1': aligned1, 'p2': aligned2,
                 'trans_err': trans_err, 'rot_err': rot_err,
                 'is_outlier': is_outlier,
+                'is_intra': is_intra,
             })
 
     return records
@@ -238,11 +238,12 @@ def plot(variant_dir: Path, gt_dir: Path, max_trans_err: float):
     ax.set_xlabel('X (m)')
     ax.set_ylabel('Y (m)')
 
-    # Colormap: green (0) → yellow → red (max)
-    cmap = cm.RdYlGn_r
+    # Colormap: green (0) → orange (mid) → red (max) — all visible on white
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        'GnOrRd', ['#1a9850', '#f46d43', '#a50026'])
     norm = mcolors.Normalize(vmin=0, vmax=max_trans_err)
 
-    # Plot trajectories
+    # Plot trajectories (ultra-light so loop lines dominate)
     colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(id_to_name))))
     for i, (rid, rname) in enumerate(sorted(id_to_name.items())):
         dpgo = variant_dir / rname / 'dpgo'
@@ -252,29 +253,35 @@ def plot(variant_dir: Path, gt_dir: Path, max_trans_err: float):
         ts, pos, _ = read_tum_trajectory(str(tums[0]))
         pos = np.array(pos)
         aligned = apply_alignment(pos, rotation, translation, scale)
-        ax.plot(aligned[:, 0], aligned[:, 1], color=colors[i], linewidth=0.8,
-                label=rname, zorder=3)
+        ax.plot(aligned[:, 0], aligned[:, 1], color=colors[i], linewidth=0.4,
+                alpha=0.15, label=rname, zorder=2)
 
-    # Plot GT trajectories (gray dashed)
+    # Plot GT trajectories (very faint)
     gt_plotted = False
     for rname, (ts_s, pos, _) in gt_poses.items():
-        ax.plot(pos[:, 0], pos[:, 1], color='gray', linewidth=0.4,
-                alpha=0.4, linestyle='--',
+        ax.plot(pos[:, 0], pos[:, 1], color='gray', linewidth=0.3,
+                alpha=0.1, linestyle='--',
                 label='GT' if not gt_plotted else None, zorder=1)
         gt_plotted = True
 
     # Plot loops without error estimate (gray, thin)
     for r in not_evaluable:
         p1, p2 = r['p1'], r['p2']
+        ls = ':' if r['is_intra'] else '-'
         ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
-                color='lightgray', linewidth=0.5, alpha=0.5, zorder=4)
+                color='lightgray', linewidth=0.5, alpha=0.5, linestyle=ls, zorder=4)
 
     # Plot loops with error, colored by trans_err
+    # inter-robot: solid, thicker; intra-robot: dashed, thinner
     for r in evaluable:
         p1, p2 = r['p1'], r['p2']
         color = cmap(norm(r['trans_err']))
-        ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
-                color=color, linewidth=1.2, alpha=0.85, zorder=5)
+        if r['is_intra']:
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                    color=color, linewidth=0.7, alpha=0.7, linestyle='--', zorder=5)
+        else:
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                    color=color, linewidth=1.2, alpha=0.85, linestyle='-', zorder=5)
 
     # Colorbar
     sm = cm.ScalarMappable(cmap=cmap, norm=norm)
@@ -283,7 +290,12 @@ def plot(variant_dir: Path, gt_dir: Path, max_trans_err: float):
     cbar.set_label('Translation error (m)', fontsize=7)
     cbar.ax.tick_params(labelsize=6)
 
-    ax.legend(loc='upper left', framealpha=0.8, fontsize=6, ncol=2)
+    from matplotlib.lines import Line2D
+    handles, labels = ax.get_legend_handles_labels()
+    handles += [Line2D([0], [0], color='gray', linewidth=1.0, linestyle='-'),
+                Line2D([0], [0], color='gray', linewidth=0.7, linestyle='--')]
+    labels += ['inter-robot loop', 'intra-robot loop']
+    ax.legend(handles, labels, loc='best', framealpha=0.8, fontsize=6, ncol=2)
     ax.grid(True, alpha=0.2, linewidth=0.3)
     plt.tight_layout(pad=0.5)
 

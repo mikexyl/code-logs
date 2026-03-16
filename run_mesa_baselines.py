@@ -33,22 +33,48 @@ DEFAULT_METHODS = ["dgs", "asapp", "geodesic-mesa"]
 # ---------------------------------------------------------------------------
 
 def find_g2o_files(folder: Path) -> list[Path]:
+    """Find per-robot g2o files, supporting two layouts:
+
+    Old: */dpgo/bpsam_robot_<id>.g2o        (one file per robot)
+    New: */dpgo/cbs_robot_<id>_<ts>.g2o     (multiple snapshots; pick latest per robot)
+
+    Returns one file per robot (the latest snapshot for the new layout).
+    """
+    # Old layout
     files = sorted(folder.glob("*/dpgo/bpsam_robot_*.g2o"))
-    if not files:
-        files = sorted(folder.glob("*.g2o"))
-    return files
+    if files:
+        return files
+
+    # New layout: cbs_robot_<id>_<timestamp>.g2o — pick latest per robot ID
+    all_new = sorted(folder.glob("*/dpgo/cbs_robot_*.g2o"))
+    if all_new:
+        latest: dict[int, Path] = {}
+        for p in all_new:
+            # stem: cbs_robot_<id>_<ts>
+            parts = p.stem.split("_")
+            try:
+                robot_id = int(parts[2])
+                ts = int(parts[3])
+            except (IndexError, ValueError):
+                continue
+            if robot_id not in latest or ts > int(latest[robot_id].stem.split("_")[3]):
+                latest[robot_id] = p
+        return [latest[rid] for rid in sorted(latest)]
+
+    # Flat .g2o fallback
+    return sorted(folder.glob("*.g2o"))
 
 
 def find_variants(folder: Path) -> list[Path]:
     """Return sub-folders that look like experiment variants (have per-robot g2o files).
-    A variant must contain */dpgo/bpsam_robot_*.g2o (multi-robot layout).
+    Supports both old (bpsam_robot_*.g2o) and new (cbs_robot_*_<ts>.g2o) layouts.
     Single merged .g2o folders (like lm_optimized) are excluded."""
     variants = []
     for sub in sorted(folder.iterdir()):
         if not sub.is_dir():
             continue
-        # Only count as variant if it has the per-robot pattern
-        if list(sub.glob("*/dpgo/bpsam_robot_*.g2o")):
+        if (list(sub.glob("*/dpgo/bpsam_robot_*.g2o")) or
+                list(sub.glob("*/dpgo/cbs_robot_*.g2o"))):
             variants.append(sub)
     return variants
 

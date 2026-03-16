@@ -40,23 +40,55 @@ from gtsam import (
 # ---------------------------------------------------------------------------
 
 def find_g2o_files(folder: Path) -> list[Path]:
-    """Return per-robot bpsam_robot_*.g2o files sorted by path (robot index)."""
+    """Return per-robot g2o files (one per robot, latest snapshot).
+
+    Old layout: */dpgo/bpsam_robot_<id>.g2o
+    New layout: */dpgo/cbs_robot_<id>_<ts>.g2o  — pick latest per robot ID
+    """
     files = sorted(folder.glob("*/dpgo/bpsam_robot_*.g2o"))
-    if not files:
-        files = sorted(folder.glob("*.g2o"))
-    return files
+    if files:
+        return files
+
+    # New layout: pick latest snapshot per robot ID
+    all_new = sorted(folder.glob("*/dpgo/cbs_robot_*.g2o"))
+    if all_new:
+        latest: dict[int, tuple[int, Path]] = {}
+        for p in all_new:
+            parts = p.stem.split("_")
+            try:
+                robot_id, ts = int(parts[2]), int(parts[3])
+            except (IndexError, ValueError):
+                continue
+            if robot_id not in latest or ts > latest[robot_id][0]:
+                latest[robot_id] = (ts, p)
+        return [latest[rid][1] for rid in sorted(latest)]
+
+    return sorted(folder.glob("*.g2o"))
 
 
 def find_tum_for_g2o(g2o_path: Path) -> Path | None:
-    """Return the Robot N.tum co-located with bpsam_robot_N.g2o, if it exists."""
-    # bpsam_robot_N.g2o → Robot N.tum in the same dpgo/ dir
-    stem = g2o_path.stem  # e.g. "bpsam_robot_0"
+    """Return the TUM file co-located with a per-robot g2o, if it exists.
+
+    Old layout: bpsam_robot_N.g2o → Robot N.tum
+    New layout: cbs_robot_N_<ts>.g2o → latest non-empty Robot N_<ts>.tum
+    """
+    stem = g2o_path.stem
     parts = stem.split("_")
-    if parts[-1].isdigit():
+    dpgo = g2o_path.parent
+
+    if stem.startswith("bpsam_robot_") and parts[-1].isdigit():
         robot_n = parts[-1]
-        tum = g2o_path.parent / f"Robot {robot_n}.tum"
-        if tum.exists():
-            return tum
+        tum = dpgo / f"Robot {robot_n}.tum"
+        return tum if tum.exists() else None
+
+    if stem.startswith("cbs_robot_") and len(parts) >= 4:
+        robot_n = parts[2]
+        candidates = sorted(
+            [p for p in dpgo.glob(f"Robot {robot_n}_*.tum") if p.stat().st_size > 0],
+            key=lambda p: int(p.stem.split("_")[-1])
+        )
+        return candidates[-1] if candidates else None
+
     return None
 
 
@@ -313,8 +345,14 @@ def write_tum_files(
 
         # Mirror the robot dir name: g2o is at <robot_dir>/dpgo/bpsam_robot_N.g2o
         robot_dir_name = g2o_path.parent.parent.name  # e.g. "g2"
-        stem = g2o_path.stem  # e.g. "bpsam_robot_0"
-        robot_n = stem.split("_")[-1]           # e.g. "0"
+        stem = g2o_path.stem  # e.g. "bpsam_robot_0" or "cbs_robot_0_<ts>"
+        parts = stem.split("_")
+        # For bpsam_robot_N: robot_n is last token
+        # For cbs_robot_N_<ts>: robot_n is parts[2]
+        if stem.startswith("cbs_robot_") and len(parts) >= 4:
+            robot_n = parts[2]
+        else:
+            robot_n = parts[-1]                 # e.g. "0"
         tum_out = out_dir / robot_dir_name / "dpgo" / f"Robot {robot_n}.tum"
         tum_out.parent.mkdir(parents=True, exist_ok=True)
 
