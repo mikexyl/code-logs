@@ -459,26 +459,20 @@ def plot_comparison(variants: list[dict], baselines: list[dict], out_dir: Path) 
     """
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 3.5 * 9 / 16)})
     fig, ax = plt.subplots()
-    any_inlier_recall = False
     for i, d in enumerate(variants):
         color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
         ax.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3, label=d['label'])
-        any_inlier_recall = _plot_inlier_lines(ax, d, color, is_baseline=False) or any_inlier_recall
     for i, d in enumerate(baselines):
         color = ROBOT_COLORS[(len(variants) + i) % len(ROBOT_COLORS)]
         ax.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3,
                 linestyle='--', label=d['label'])
-        any_inlier_recall = _plot_inlier_lines(ax, d, color, is_baseline=True) or any_inlier_recall
     xs = variants[0]['xs'] if variants else baselines[0]['xs']
     ax.set_xticks(xs)
     ax.set_xticklabels([f'{x}°' for x in xs])
     ax.set_xlabel('Ground-truth Loop Relative Rotation')
     ax.set_ylabel('Recall')
     handles, labels = ax.get_legend_handles_labels()
-    if any_inlier_recall:
-        handles.append(mlines.Line2D([], [], color='gray', linestyle='--', linewidth=0.8))
-        labels.append('inlier recall')
-    ax.legend(handles, labels, loc='upper left', fontsize=6)
+    ax.legend(handles, labels, loc='upper right', fontsize=6)
     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
     save_fig(fig, out_dir / 'recall_comparison')
