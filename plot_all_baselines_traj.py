@@ -80,13 +80,25 @@ def jrr_to_positions(robot_map: dict, jrr_poses: dict) -> dict:
 def tum_dir_to_positions(robot_dirs: list[tuple[str, Path]]) -> dict:
     """
     robot_dirs: [(robot_char, tum_path), ...]
-    Returns {robot_char: (N,3) positions}
+    Returns {robot_char: (N,3) positions}, sorted by timestamp with
+    stray outlier timestamps removed (e.g. file-write timestamps appended
+    at the end of CBS+ TUM files).
     """
     out = {}
     for rc, tum_path in robot_dirs:
-        _, pos, _ = read_tum_trajectory(str(tum_path))
-        if len(pos):
-            out[rc] = np.array(pos)
+        ts, pos, _ = read_tum_trajectory(str(tum_path))
+        if len(pos) == 0:
+            continue
+        ts = np.array(ts)
+        pos = np.array(pos)
+        # Sort by timestamp
+        order = np.argsort(ts)
+        ts, pos = ts[order], pos[order]
+        # Drop outlier timestamps: any pose whose timestamp deviates more
+        # than 1e7 s from the median (catches file-write-time stray entries)
+        median_ts = np.median(ts)
+        mask = np.abs(ts - median_ts) < 1e7
+        out[rc] = pos[mask]
     return out
 
 
@@ -148,12 +160,6 @@ def align_to_gt(positions_by_robot: dict, gt_by_robot: dict):
 # Build robot_map from a variant dir
 # ---------------------------------------------------------------------------
 
-ROBOT_DIR_TO_ID = {
-    'hathor': 0, 'sparkal1': 1, 'sparkal2': 2,
-    'thoth': 3, 'acl_jackal': 4, 'acl_jackal2': 5,
-}
-
-
 def build_robot_map(variant_dir: Path) -> dict:
     """Return {robot_char: {'tum': Path, 'robot_dir': Path}}"""
     robot_map = {}
@@ -198,29 +204,25 @@ def main():
     mesa_dir = variant_dir / 'mesa_baselines'
 
     # -----------------------------------------------------------------------
-    # Load GT trajectories
+    # Build robot map first (needed to resolve GT dir names)
+    # -----------------------------------------------------------------------
+    robot_map = build_robot_map(variant_dir)
+    print(f"Robot map chars: {sorted(robot_map)}")
+
+    # -----------------------------------------------------------------------
+    # Load GT trajectories — keyed by robot_char via robot_dir name
     # -----------------------------------------------------------------------
     gt_by_robot: dict[str, np.ndarray] = {}
-    robot_chars = {}  # dir_name → char
-    for dir_name, rid in ROBOT_DIR_TO_ID.items():
-        rc = chr(ord('a') + rid)
+    for rc, info in robot_map.items():
+        dir_name = info['robot_dir'].name  # e.g. 'g2', 'hathor', 'a1'
         for ext in ['.csv', '.txt']:
             p = gt_dir / (dir_name + ext)
             if p.exists():
                 _, pos, _ = load_gt_trajectory(str(p))
                 if len(pos):
                     gt_by_robot[rc] = np.array(pos)
-                    robot_chars[dir_name] = rc
                 break
     print(f"GT robots loaded: {sorted(gt_by_robot)}")
-
-    # -----------------------------------------------------------------------
-    # Load each method
-    # -----------------------------------------------------------------------
-
-    # robot_map for MESA methods (source TUM for timestamp matching)
-    robot_map = build_robot_map(variant_dir)
-    print(f"Robot map chars: {sorted(robot_map)}")
 
     methods: list[tuple[str, dict, np.ndarray | None, np.ndarray | None, float]] = []
     # Each entry: (label, {rc: (N,3)}, R, t, s)
@@ -323,7 +325,7 @@ def main():
         print(f"Centralized GNC-GM: {sorted(aligned)}")
 
     # -----------------------------------------------------------------------
-    # Plot
+    # Plot — two separate figures
     # -----------------------------------------------------------------------
     METHOD_COLORS = [
         '#E41A1C',  # DGS         red
@@ -332,39 +334,90 @@ def main():
         '#377EB8',  # CBS+        blue
         '#4DAF4A',  # Centralized green
     ]
-    METHOD_STYLES = ['-', '--', ':', '-.', (0, (3, 1, 1, 1))]
+    METHOD_STYLES = ['-', '--', ':', '-', '-']
 
+    GROUPS = [
+        ('ours',      ['CBS+', 'Centralized GNC-GM']),
+        ('baselines', ['DGS', 'ASAPP', 'Geodesic-MESA']),
+    ]
+    method_dict = {label: aligned for label, aligned in methods}
+    # Preserve original color/style assignment by global index
+    label_order = ['DGS', 'ASAPP', 'Geodesic-MESA', 'CBS+', 'Centralized GNC-GM']
+
+    for suffix, group_labels in GROUPS:
+        plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 3.5)})
+        fig, ax = plt.subplots()
+        ax.set_aspect('equal')
+        ax.set_xlabel('x (m)')
+        ax.set_ylabel('y (m)')
+
+        # GT
+        gt_robots = sorted(gt_by_robot.items())
+        for rc, pos in gt_robots:
+            ax.plot(pos[:, 0], pos[:, 1], color='black', linewidth=0.7,
+                    linestyle='--', alpha=0.6,
+                    label='GT' if rc == gt_robots[0][0] else None)
+
+        for label in group_labels:
+            if label not in method_dict:
+                continue
+            i = label_order.index(label)
+            color = METHOD_COLORS[i % len(METHOD_COLORS)]
+            ls = METHOD_STYLES[i % len(METHOD_STYLES)]
+            aligned = method_dict[label]
+            first = True
+            for rc in sorted(aligned):
+                pos = aligned[rc]
+                ax.plot(pos[:, 0], pos[:, 1], color=color, linewidth=0.8,
+                        linestyle=ls, alpha=0.85,
+                        label=label if first else None)
+                first = False
+
+        ax.legend(loc='best', framealpha=0.85, fontsize=6,
+                  handlelength=2.0, handletextpad=0.4, labelspacing=0.3)
+        plt.tight_layout(pad=0.4)
+        save_fig(fig, variant_dir / f'all_baselines_trajectories_{suffix}')
+        plt.close(fig)
+
+    # Combined plot: faded baselines + highlighted CBS+, no centralized
+    combined_order = ['DGS', 'ASAPP', 'Geodesic-MESA', 'CBS+', 'Centralized GNC-GM']
+    COMBINED_STYLE = {
+        'DGS':                ('#AAAAAA', 0.5, 0.3, '-'),
+        'ASAPP':              ('#AAAAAA', 0.5, 0.3, '--'),
+        'Geodesic-MESA':      ('#AAAAAA', 0.5, 0.3, ':'),
+        'CBS+':               ('#377EB8', 1.2, 0.95, '-'),
+        'Centralized GNC-GM': ('#77C878', 0.8, 0.7, '--'),
+    }
     plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 3.5)})
     fig, ax = plt.subplots()
     ax.set_aspect('equal')
     ax.set_xlabel('x (m)')
     ax.set_ylabel('y (m)')
 
-    # GT — plot each robot in light gray
-    for rc, pos in sorted(gt_by_robot.items()):
-        ax.plot(pos[:, 0], pos[:, 1], color='black', linewidth=0.7,
-                linestyle='--', alpha=0.6,
-                label='GT' if rc == sorted(gt_by_robot)[0] else None)
+    gt_robots = sorted(gt_by_robot.items())
+    for rc, pos in gt_robots:
+        ax.plot(pos[:, 0], pos[:, 1], color='black', linewidth=0.8,
+                linestyle='--', alpha=0.7, zorder=5,
+                label='GT' if rc == gt_robots[0][0] else None)
 
-    # Methods
-    for i, (label, aligned) in enumerate(methods):
-        color = METHOD_COLORS[i % len(METHOD_COLORS)]
-        ls = METHOD_STYLES[i % len(METHOD_STYLES)]
+    for label in combined_order:
+        if label not in method_dict:
+            continue
+        color, lw, alpha, ls = COMBINED_STYLE[label]
+        zorder = 4 if label in ('CBS+', 'Centralized GNC-GM') else 2
+        aligned = method_dict[label]
         first = True
         for rc in sorted(aligned):
             pos = aligned[rc]
-            ax.plot(pos[:, 0], pos[:, 1], color=color, linewidth=0.8,
-                    linestyle=ls, alpha=0.85,
+            ax.plot(pos[:, 0], pos[:, 1], color=color, linewidth=lw,
+                    linestyle=ls, alpha=alpha, zorder=zorder,
                     label=label if first else None)
             first = False
 
-    # Legend
     ax.legend(loc='best', framealpha=0.85, fontsize=6,
               handlelength=2.0, handletextpad=0.4, labelspacing=0.3)
     plt.tight_layout(pad=0.4)
-
-    out = variant_dir / 'all_baselines_trajectories'
-    save_fig(fig, out)
+    save_fig(fig, variant_dir / 'all_baselines_trajectories_combined')
     plt.close(fig)
 
 
