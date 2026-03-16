@@ -301,7 +301,7 @@ def main():
         ax.grid(True, alpha=0.3, linewidth=0.3)
         # Method label inside bottom-left
         ax.text(0.02, 0.03, label_text, transform=ax.transAxes,
-                fontsize=7, va='bottom', ha='left',
+                fontsize=9, va='bottom', ha='left',
                 bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7, ec='none'))
 
     _draw_panel(ax_km,   km_trajs,   km_gt,   km_loops,   'Kimera-Multi')
