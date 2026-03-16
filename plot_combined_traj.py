@@ -294,7 +294,7 @@ def main():
         lc_added = False
         for pt1, pt2 in loop_lines:
             ax.plot([pt1[0], pt2[0]], [pt1[1], pt2[1]],
-                    color='#CC2222', lw=1.2, alpha=0.7, zorder=10,
+                    color='#CC2222', lw=2.0, alpha=0.7, zorder=10,
                     label='Loop closure' if not lc_added else None)
             lc_added = True
         ax.set_aspect('equal')
@@ -319,8 +319,10 @@ def main():
                handlelength=1.0, handletextpad=0.3, columnspacing=0.8,
                fontsize=6)
 
+    plt.setp(ax_km.get_xticklabels(), visible=False)
+    ax_km.tick_params(axis='x', length=0)
     plt.tight_layout(pad=0.3, h_pad=0.0)
-    plt.subplots_adjust(bottom=0.08)
+    plt.subplots_adjust(bottom=0.08, hspace=0.0)
 
     out = _abs(args.output) if args.output else ours_dir.parent / 'combined_traj'
     save_fig(fig, out)
