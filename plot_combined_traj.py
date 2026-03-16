@@ -272,13 +272,13 @@ def main():
     })
     fig, (ax_km, ax_ours) = plt.subplots(2, 1, sharex=True, sharey=True)
 
-    def _draw_panel(ax, trajs, gt_trajs, loop_lines):
+    def _draw_panel(ax, trajs, gt_trajs, loop_lines, label_text):
         # GT (gray dashed, one legend entry)
         gt_plotted = False
         for rname in robot_order:
             pos = gt_trajs.get(rname)
             if pos is not None:
-                ax.plot(pos[:, 0], pos[:, 1], color='gray', lw=0.5,
+                ax.plot(pos[:, 0], pos[:, 1], color='gray', lw=0.8,
                         alpha=0.5, ls='--', label='GT' if not gt_plotted else None)
                 gt_plotted = True
         # Estimated trajectories
@@ -289,36 +289,37 @@ def main():
             cidx = name_to_cidx.get(rname, 0)
             color = ROBOT_COLORS[cidx % len(ROBOT_COLORS)]
             label = f'R{robot_order.index(rname)}'
-            ax.plot(pts[:, 0], pts[:, 1], lw=0.8, color=color, label=label)
+            ax.plot(pts[:, 0], pts[:, 1], lw=1.2, color=color, label=label)
         # Loop closures
         lc_added = False
         for pt1, pt2 in loop_lines:
             ax.plot([pt1[0], pt2[0]], [pt1[1], pt2[1]],
-                    color='#CC2222', lw=0.8, alpha=0.7, zorder=10,
+                    color='#CC2222', lw=1.2, alpha=0.7, zorder=10,
                     label='Loop closure' if not lc_added else None)
             lc_added = True
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3, linewidth=0.3)
+        # Method label inside bottom-left
+        ax.text(0.02, 0.03, label_text, transform=ax.transAxes,
+                fontsize=7, va='bottom', ha='left',
+                bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7, ec='none'))
 
-    _draw_panel(ax_km,   km_trajs,   km_gt,   km_loops)
-    _draw_panel(ax_ours, ours_trajs, ours_gt, ours_loops)
+    _draw_panel(ax_km,   km_trajs,   km_gt,   km_loops,   '(a) Kimera-Multi')
+    _draw_panel(ax_ours, ours_trajs, ours_gt, ours_loops, '(b) Ours')
 
-    ax_km.set_title('(a) Kimera-Multi', fontsize=7, loc='left', pad=2)
-    ax_ours.set_title('(b) Ours', fontsize=7, loc='left', pad=2)
     ax_ours.set_xlabel('X (m)')
     for ax in (ax_km, ax_ours):
         ax.set_ylabel('Y (m)')
 
     # Single shared legend at bottom (collect from top panel which has all entries)
     handles, labels = ax_km.get_legend_handles_labels()
-    # Ensure loop closure handle present (top panel always has loops)
     fig.legend(handles, labels, loc='lower center',
                bbox_to_anchor=(0.5, 0.0), ncol=len(handles),
                framealpha=0.9, edgecolor='none',
                handlelength=1.0, handletextpad=0.3, columnspacing=0.8,
                fontsize=6)
 
-    plt.tight_layout(pad=0.3, h_pad=0.4)
+    plt.tight_layout(pad=0.3, h_pad=0.0)
     plt.subplots_adjust(bottom=0.08)
 
     out = _abs(args.output) if args.output else ours_dir.parent / 'combined_traj'
