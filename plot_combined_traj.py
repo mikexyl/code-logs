@@ -304,8 +304,8 @@ def main():
                 fontsize=7, va='bottom', ha='left',
                 bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7, ec='none'))
 
-    _draw_panel(ax_km,   km_trajs,   km_gt,   km_loops,   '(a) Kimera-Multi')
-    _draw_panel(ax_ours, ours_trajs, ours_gt, ours_loops, '(b) Ours')
+    _draw_panel(ax_km,   km_trajs,   km_gt,   km_loops,   'Kimera-Multi')
+    _draw_panel(ax_ours, ours_trajs, ours_gt, ours_loops, 'Ours')
 
     ax_ours.set_xlabel('X (m)')
     for ax in (ax_km, ax_ours):
