@@ -442,7 +442,7 @@ def plot_single(data: dict, out_dir: Path) -> None:
         ax.legend(handles, labels, loc='upper left', fontsize=6)
     ax.set_xticks(data['xs'])
     ax.set_xticklabels([f'{x}°' for x in data['xs']])
-    ax.set_xlabel('GT Rotation Bucket Upper Bound')
+    ax.set_xlabel('Ground-truth Loop Relative Rotation')
     ax.set_ylabel('Recall')
     ax.grid(True, axis='y', alpha=0.3, linestyle='--', linewidth=0.3)
     plt.tight_layout()
@@ -457,7 +457,7 @@ def plot_comparison(variants: list[dict], baselines: list[dict], out_dir: Path) 
     For each series, also draws inlier recall (dashed/dash-dot) and inlier/PR (dotted)
     if inlier data is available.
     """
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.0)})
+    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 3.5 * 9 / 16)})
     fig, ax = plt.subplots()
     any_inlier_recall = False
     for i, d in enumerate(variants):
@@ -472,7 +472,7 @@ def plot_comparison(variants: list[dict], baselines: list[dict], out_dir: Path) 
     xs = variants[0]['xs'] if variants else baselines[0]['xs']
     ax.set_xticks(xs)
     ax.set_xticklabels([f'{x}°' for x in xs])
-    ax.set_xlabel('GT Rotation Bucket Upper Bound')
+    ax.set_xlabel('Ground-truth Loop Relative Rotation')
     ax.set_ylabel('Recall')
     handles, labels = ax.get_legend_handles_labels()
     if any_inlier_recall:
@@ -994,7 +994,7 @@ def main() -> None:
                         help='Folder containing gt_loops_angle*.csv files')
     parser.add_argument('--tol', type=float, default=2.0,
                         help='Timestamp tolerance in seconds (default: 2.0)')
-    parser.add_argument('--max-angle', type=int, default=None, dest='max_angle',
+    parser.add_argument('--max-angle', type=int, default=50, dest='max_angle',
                         help='Only evaluate angle thresholds up to this value in degrees')
     parser.add_argument('--trans-abs', type=float, default=2.0, dest='trans_abs',
                         help='Absolute translation error floor for inlier/outlier detection in metres (default: 2.0)')
