@@ -16,12 +16,11 @@
 # (they must match the folder / directory names exactly).
 
 # ── Our method variants ────────────────────────────────────────────────────────
-ns:            "NS"
-ns-as:         "NS+AS"
-ns-as-l:       "NS+AS-L"
-ns-as-vpr:     "NS+AS+VPR"
-ns-ncs-nproj:  "NS (no CS/proj)"
-no-scoring:    "No Scoring"
+ns-as:         "Ours"
+ns-ncs-nproj:  "w.o. Aug"
+ns:            "w.o. AS"
+# ns-as-l:       "NS+AS-L"
+# ns-as-vpr:     "NS+AS+VPR"
 mixvpr:        "MixVPR"
 
 # ── Baselines ──────────────────────────────────────────────────────────────────
