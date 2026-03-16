@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import re
 import sys
 import subprocess
 import argparse
@@ -152,10 +153,10 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
         'font.size': 8,
         'axes.labelsize': 8,
         'axes.titlesize': 8,
-        'legend.fontsize': 7,
+        'legend.fontsize': 6,
         'xtick.labelsize': 7,
         'ytick.labelsize': 7,
-        'figure.figsize': (3.5, 2.0),
+        'figure.figsize': (3.5, 2.2),
         'figure.dpi': 300,
         'savefig.dpi': 300,
         'axes.linewidth': 0.5,
@@ -170,6 +171,13 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
     # Color map for different robots
     colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(pairs))))
 
+    def _robot_short_label(robot_path: str) -> str:
+        """Convert 'Robot 3_1234567.tum' → 'R3'."""
+        stem = os.path.basename(robot_path).replace('.tum', '')
+        # stem is like "Robot 3" or "Robot 3_1234567"
+        m = re.search(r'Robot\s+(\d+)', stem)
+        return f'R{m.group(1)}' if m else stem
+
     # Plot each robot's estimated (aligned) trajectory
     for idx, p in enumerate(pairs):
         robot_path = p['robot_path']
@@ -181,7 +189,7 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
         aligned_positions = apply_alignment(est_positions, rotation, translation, scale)
         ax.plot(aligned_positions[:, 0], aligned_positions[:, 1],
                 color=colors[idx % len(colors)], linewidth=1.0,
-                label=f'{robot_name}')
+                label=_robot_short_label(robot_path))
 
     # Plot ground truth (each robot separately to avoid jump lines)
     gt_plotted = False
@@ -190,7 +198,7 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
         _, gt_positions, _ = read_tum_trajectory(p['gt_path'])
         if len(gt_positions) > 0:
             gt_positions = apply_frame_transform(gt_positions, T_gt)
-            label = 'Ground Truth' if not gt_plotted else None
+            label = 'GT' if not gt_plotted else None
             ax.plot(gt_positions[:, 0], gt_positions[:, 1],
                     color='gray', linewidth=0.5, alpha=0.5,
                     linestyle='--', label=label)
@@ -198,10 +206,21 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
 
     ax.set_xlabel('X (m)')
     ax.set_ylabel('Y (m)')
-    ax.legend(loc='best', framealpha=0.9, edgecolor='none')
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3, linewidth=0.3)
-    plt.tight_layout(pad=0.5)
+
+    def _place_legend(ax, fig):
+        handles, labels = ax.get_legend_handles_labels()
+        n = len(handles)
+        ncol = n  # single row
+        fig.legend(handles, labels, loc='lower center',
+                   bbox_to_anchor=(0.5, 0.0), ncol=ncol,
+                   framealpha=0.9, edgecolor='none',
+                   handlelength=1.0, handletextpad=0.3, columnspacing=0.8)
+
+    _place_legend(ax, fig)
+    plt.tight_layout(pad=0.3)
+    plt.subplots_adjust(bottom=0.18)
 
     # --- Version 1: no loop closures ---
     _save_trajectory_plot(fig, experiment_folder, "trajectories_aligned_no_loops")
@@ -215,8 +234,9 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
                 label='Loop closure' if not lc_label_added else None)
         lc_label_added = True
     if loop_lines:
-        ax.legend(loc='best', framealpha=0.9, edgecolor='none')
-        plt.tight_layout(pad=0.5)
+        _place_legend(ax, fig)
+        plt.tight_layout(pad=0.3)
+        plt.subplots_adjust(bottom=0.18)
 
     _save_trajectory_plot(fig, experiment_folder, "trajectories_aligned")
 
