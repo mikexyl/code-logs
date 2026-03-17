@@ -36,49 +36,16 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
-import yaml
 
 from utils.io import (load_keyframes_csv, load_loop_closures_csv, load_gt_trajectory,
-                      load_variant_aliases, apply_variant_alias)
-from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
+                      load_variant_aliases, apply_variant_alias,
+                      is_robot_dir, discover_variants, discover_baselines,
+                      discover_robots, load_gt_trajectories_by_name)
+from utils.plot import (IEEE_RC, ROBOT_COLORS, save_fig,
+                        quat_xyzw_to_rotation_matrix, rotation_angle_deg,
+                        find_nearest_pose)
 
 
-# ---------------------------------------------------------------------------
-# Robot discovery
-# ---------------------------------------------------------------------------
-
-def discover_robots(exp_dir: Path) -> dict[int, str]:
-    """Return {robot_id: robot_dir_name}.
-
-    First checks for a robot_names.yaml in exp_dir with keys robotN_name.
-    Falls back to scanning for dpgo/Robot N.tum files.
-    """
-    yaml_path = exp_dir / 'robot_names.yaml'
-    if yaml_path.exists():
-        with open(yaml_path) as f:
-            data = yaml.safe_load(f)
-        id_to_name: dict[int, str] = {}
-        for key, name in data.items():
-            m = re.match(r'robot(\d+)_name', key)
-            if m:
-                id_to_name[int(m.group(1))] = name
-        return id_to_name
-
-    id_to_name = {}
-    for robot_dir in sorted(exp_dir.iterdir()):
-        if not robot_dir.is_dir():
-            continue
-        dpgo = robot_dir / 'dpgo'
-        if not dpgo.is_dir():
-            continue
-        for tum in sorted(dpgo.glob('Robot *.tum')):
-            try:
-                # handles both "Robot N.tum" and "Robot N_timestamp.tum"
-                rid = int(tum.stem.split()[-1].split('_')[0])
-            except ValueError:
-                continue
-            id_to_name[rid] = robot_dir.name
-    return id_to_name
 
 
 # ---------------------------------------------------------------------------
@@ -248,41 +215,6 @@ def compute_recall(
 # ---------------------------------------------------------------------------
 # Variant discovery
 # ---------------------------------------------------------------------------
-
-def _is_robot_dir(d: Path) -> bool:
-    return (d / 'distributed').is_dir() or (d / 'dpgo').is_dir()
-
-
-def discover_variants(exp_dir: Path) -> list[Path]:
-    """Return subdirs of exp_dir that look like variant experiment dirs.
-
-    A variant dir is a subdir that contains at least one robot subdir
-    (identified by having a distributed/ or dpgo/ folder inside).
-    """
-    variants = []
-    for d in sorted(exp_dir.iterdir()):
-        if not d.is_dir():
-            continue
-        if any(_is_robot_dir(sub) for sub in d.iterdir() if sub.is_dir()):
-            variants.append(d)
-    return variants
-
-
-def discover_baselines(exp_dir: Path) -> list[Path]:
-    """Return baseline method dirs from baselines/<exp_dir.name>/*.
-
-    Only includes dirs where discover_robots() returns results.
-    """
-    baseline_root = exp_dir.parent / 'baselines' / exp_dir.name
-    if not baseline_root.exists():
-        return []
-    baselines = []
-    for d in sorted(baseline_root.iterdir()):
-        if not d.is_dir():
-            continue
-        if discover_robots(d):
-            baselines.append(d)
-    return baselines
 
 
 # ---------------------------------------------------------------------------
@@ -498,27 +430,6 @@ def _load_gt_poses(gt_dir: Path, robot_names: list[str]) -> dict[str, tuple]:
     return result
 
 
-def _nearest_pose(ts_s: float, timestamps: np.ndarray, positions: np.ndarray,
-                  rotations: np.ndarray, max_gap_s: float):
-    idx = int(np.argmin(np.abs(timestamps - ts_s)))
-    if abs(float(timestamps[idx]) - ts_s) > max_gap_s:
-        return None
-    return positions[idx], rotations[idx]
-
-
-def _quat_xyzw_to_rot(q: np.ndarray) -> np.ndarray:
-    """xyzw quaternion → 3×3 rotation matrix."""
-    x, y, z, w = float(q[0]), float(q[1]), float(q[2]), float(q[3])
-    return np.array([
-        [1 - 2*(y*y + z*z),     2*(x*y - z*w),     2*(x*z + y*w)],
-        [    2*(x*y + z*w), 1 - 2*(x*x + z*z),     2*(y*z - x*w)],
-        [    2*(x*z - y*w),     2*(y*z + x*w), 1 - 2*(x*x + y*y)],
-    ])
-
-
-def _rot_angle_deg(R: np.ndarray) -> float:
-    cos_val = float(np.clip((np.trace(R) - 1) / 2, -1.0, 1.0))
-    return float(np.degrees(np.arccos(cos_val)))
 
 
 def tag_inliers(
@@ -546,21 +457,21 @@ def tag_inliers(
             continue
         ts1, pos1, rot1 = gt_poses[n1]
         ts2, pos2, rot2 = gt_poses[n2]
-        pose1 = _nearest_pose(t1, ts1, pos1, rot1, max_gap_s)
-        pose2 = _nearest_pose(t2, ts2, pos2, rot2, max_gap_s)
+        pose1 = find_nearest_pose(t1, ts1, pos1, rot1, max_gap_s)
+        pose2 = find_nearest_pose(t2, ts2, pos2, rot2, max_gap_s)
         if pose1 is None or pose2 is None:
             continue
         p_gt1, r_gt1 = pose1
         p_gt2, r_gt2 = pose2
-        R1 = _quat_xyzw_to_rot(r_gt1)
-        R2 = _quat_xyzw_to_rot(r_gt2)
+        R1 = quat_xyzw_to_rotation_matrix(r_gt1)
+        R2 = quat_xyzw_to_rotation_matrix(r_gt2)
         p_rel_gt  = R1.T @ (p_gt2 - p_gt1)
         R_rel_gt  = R1.T @ R2
         p_det     = np.array([lc['tx'], lc['ty'], lc['tz']])
-        R_det     = _quat_xyzw_to_rot(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
+        R_det     = quat_xyzw_to_rotation_matrix(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
         gt_dist   = float(np.linalg.norm(p_rel_gt))
         trans_err = float(np.linalg.norm(p_det - p_rel_gt))
-        rot_err   = _rot_angle_deg(R_det.T @ R_rel_gt)
+        rot_err   = rotation_angle_deg(R_det.T @ R_rel_gt)
         if trans_err <= max(trans_abs, trans_rel * gt_dist) and rot_err <= rot_thr:
             inliers.add(lc['idx'])
     return inliers
@@ -625,8 +536,8 @@ def compute_outlier_ratio(
 
             ts1, pos1, rot1 = gt_poses[n1]
             ts2, pos2, rot2 = gt_poses[n2]
-            pose1 = _nearest_pose(t1, ts1, pos1, rot1, max_gap_s)
-            pose2 = _nearest_pose(t2, ts2, pos2, rot2, max_gap_s)
+            pose1 = find_nearest_pose(t1, ts1, pos1, rot1, max_gap_s)
+            pose2 = find_nearest_pose(t2, ts2, pos2, rot2, max_gap_s)
             if pose1 is None or pose2 is None:
                 continue
 
@@ -634,18 +545,18 @@ def compute_outlier_ratio(
             p_gt2, r_gt2 = pose2
 
             # GT relative pose in robot-1's local frame
-            R1 = _quat_xyzw_to_rot(r_gt1)
-            R2 = _quat_xyzw_to_rot(r_gt2)
+            R1 = quat_xyzw_to_rotation_matrix(r_gt1)
+            R2 = quat_xyzw_to_rotation_matrix(r_gt2)
             p_rel_gt = R1.T @ (p_gt2 - p_gt1)
             R_rel_gt = R1.T @ R2
 
             # Detected relative pose
             p_det = np.array([lc['tx'], lc['ty'], lc['tz']])
-            R_det = _quat_xyzw_to_rot(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
+            R_det = quat_xyzw_to_rotation_matrix(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
 
             gt_dist   = float(np.linalg.norm(p_rel_gt))
             trans_err = float(np.linalg.norm(p_det - p_rel_gt))
-            rot_err   = _rot_angle_deg(R_det.T @ R_rel_gt)
+            rot_err   = rotation_angle_deg(R_det.T @ R_rel_gt)
 
             n_total += 1
             if trans_err > max(trans_abs, trans_rel * gt_dist) or rot_err > rot_thr:
@@ -704,29 +615,29 @@ def collect_outlier_stats(
 
             ts1, pos1, rot1 = gt_poses[n1]
             ts2, pos2, rot2 = gt_poses[n2]
-            pose1 = _nearest_pose(t1, ts1, pos1, rot1, max_gap_s)
-            pose2 = _nearest_pose(t2, ts2, pos2, rot2, max_gap_s)
+            pose1 = find_nearest_pose(t1, ts1, pos1, rot1, max_gap_s)
+            pose2 = find_nearest_pose(t2, ts2, pos2, rot2, max_gap_s)
             if pose1 is None or pose2 is None:
                 continue
 
             p_gt1, r_gt1 = pose1
             p_gt2, r_gt2 = pose2
-            R1 = _quat_xyzw_to_rot(r_gt1)
-            R2 = _quat_xyzw_to_rot(r_gt2)
+            R1 = quat_xyzw_to_rotation_matrix(r_gt1)
+            R2 = quat_xyzw_to_rotation_matrix(r_gt2)
             p_rel_gt = R1.T @ (p_gt2 - p_gt1)
             R_rel_gt = R1.T @ R2
 
             p_det = np.array([lc['tx'], lc['ty'], lc['tz']])
-            R_det = _quat_xyzw_to_rot(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
+            R_det = quat_xyzw_to_rotation_matrix(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
 
             gt_dist    = float(np.linalg.norm(p_rel_gt))
-            gt_rot_deg = _rot_angle_deg(R_rel_gt)
+            gt_rot_deg = rotation_angle_deg(R_rel_gt)
             trans_err  = float(np.linalg.norm(p_det - p_rel_gt))
-            rot_err    = _rot_angle_deg(R_det.T @ R_rel_gt)
+            rot_err    = rotation_angle_deg(R_det.T @ R_rel_gt)
             is_outlier = trans_err > max(trans_abs, trans_rel * gt_dist) or rot_err > rot_thr
 
             det_dist    = float(np.linalg.norm(p_det))
-            det_rot_deg = _rot_angle_deg(R_det)
+            det_rot_deg = rotation_angle_deg(R_det)
 
             records.append({'gt_dist': gt_dist, 'gt_rot_deg': gt_rot_deg,
                             'trans_err': trans_err, 'rot_err': rot_err,

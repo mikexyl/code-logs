@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from utils.io import load_variant_aliases, apply_variant_alias
+from utils.io import load_variant_aliases, apply_variant_alias, is_robot_dir, discover_variants
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig, mark_endpoint
 
 COLORS = ROBOT_COLORS
@@ -276,10 +276,6 @@ def plot_loops_comparison(paths: list[Path], folder: Path,
     plt.close(fig)
 
 
-def _is_robot_dir(d: Path) -> bool:
-    return (d / "distributed").is_dir() or (d / "dpgo").is_dir()
-
-
 def group_recall_files(folder: Path) -> tuple[list[Path], list[Path]]:
     """Return (variant_paths, baseline_paths) of loops_recall.csv files.
 
@@ -290,10 +286,7 @@ def group_recall_files(folder: Path) -> tuple[list[Path], list[Path]]:
     variant_paths: list[Path] = []
 
     # Check for variant subfolders
-    variant_dirs = [
-        d for d in sorted(folder.iterdir())
-        if d.is_dir() and any(_is_robot_dir(sub) for sub in d.iterdir() if sub.is_dir())
-    ]
+    variant_dirs = discover_variants(folder)
     if variant_dirs:
         for d in variant_dirs:
             p = d / "loops_recall.csv"

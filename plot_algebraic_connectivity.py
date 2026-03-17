@@ -17,51 +17,22 @@ Usage:
 
 import argparse
 import csv
-import re
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
 
-from utils.io import load_keyframes_csv, load_variant_aliases, apply_variant_alias
+from utils.io import (load_keyframes_csv, load_variant_aliases, apply_variant_alias,
+                      is_robot_dir, discover_robots)
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
 
 _POSE_ID_MULT = 10_000_000   # robot_id * MULT + pose_index → unique integer node ID
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _is_robot_dir(d: Path) -> bool:
-    return (d / "distributed").is_dir() or (d / "dpgo").is_dir()
-
-
 def _robot_id_map(variant_dir: Path) -> dict[str, int]:
-    """Map robot dir name → integer robot ID.
-
-    Primary source: Robot N.tum filenames in dpgo/ subdirs.
-    Fallback: robot_names.yaml (Kimera-Multi baseline).
-    """
-    mapping: dict[str, int] = {}
-    for robot_dir in variant_dir.iterdir():
-        if not _is_robot_dir(robot_dir):
-            continue
-        for tum in robot_dir.rglob("Robot *.tum"):
-            m = re.match(r"Robot (\d+)\.tum", tum.name)
-            if m:
-                mapping[robot_dir.name] = int(m.group(1))
-                break
-
-    if not mapping:
-        yaml_path = variant_dir / "robot_names.yaml"
-        if yaml_path.exists():
-            for line in yaml_path.read_text().splitlines():
-                m = re.match(r"robot(\d+)_name:\s*(\S+)", line.strip())
-                if m:
-                    mapping[m.group(2)] = int(m.group(1))
-    return mapping
+    """Map robot dir name → integer robot ID (inverted from discover_robots)."""
+    return {name: rid for rid, name in discover_robots(variant_dir).items()}
 
 
 def _build_kf_index(variant_dir: Path, rid_map: dict[str, int]
@@ -139,27 +110,18 @@ def build_graph(variant_dir: Path) -> nx.Graph:
 VariantEntry = tuple[str, Path, bool]  # (label, dir, is_baseline)
 
 
-def discover_variants(folder: Path) -> list[VariantEntry]:
+def _discover_all(folder: Path) -> list[VariantEntry]:
+    """Return variants + baselines as (raw_name, dir, is_baseline) triples."""
+    from utils.io import discover_variants as _dv, discover_baselines as _db
+    variant_dirs = _dv(folder)
     results: list[VariantEntry] = []
-
-    variant_dirs = [
-        d for d in sorted(folder.iterdir())
-        if d.is_dir() and any(_is_robot_dir(s) for s in d.iterdir() if s.is_dir())
-    ]
     if variant_dirs:
         for d in variant_dirs:
             results.append((d.name, d, False))
     else:
         results.append((folder.name, folder, False))
-
-    baseline_dir = folder.parent / "baselines" / folder.name
-    if baseline_dir.exists():
-        for method_dir in sorted(baseline_dir.iterdir()):
-            if method_dir.is_dir() and any(
-                _is_robot_dir(s) for s in method_dir.iterdir() if s.is_dir()
-            ):
-                results.append((method_dir.name, method_dir, True))
-
+    for d in _db(folder):
+        results.append((d.name, d, True))
     return results
 
 
@@ -181,7 +143,7 @@ def main() -> None:
         raise SystemExit(1)
 
     aliases  = load_variant_aliases()
-    variants = discover_variants(folder)
+    variants = _discover_all(folder)
     print(f"Experiment: {folder.name}  (unweighted, inlier loops only)")
     print(f"{'Variant':<22} {'Nodes':>7} {'Edges':>7} {'LC edges':>9} "
           f"{'Connected':>10} {'λ₂':>12}")

@@ -203,6 +203,26 @@ Plots aligned robot trajectories with inter-robot loop closure lines colored by 
 
 Key option: `--max_err` sets the colorbar maximum in metres (default 20). Saves `loop_errors_map.pdf/png`.
 
+### plot_multi_dataset_traj.py — combined trajectory figure across datasets
+```bash
+python3 plot_multi_dataset_traj.py
+python3 plot_multi_dataset_traj.py --output multi_dataset_traj
+```
+Produces a 1×5 subplot figure with ns-as variant trajectories for g123, g156, g2345, a12, and gate. Each panel shows GT (dashed gray) + per-robot colored trajectories. Alignment is loaded from `evo_ape.zip` (or `lm_optimized/evo_ape.zip` as fallback); falls back to Umeyama if neither exists. Shared legend at bottom.
+
+### plot_kimera_traj.py — single-variant Kimera-Multi trajectory
+```bash
+python3 plot_kimera_traj.py <variant_dir> [--gt_dir ground_truth/campus]
+```
+Plots aligned trajectories + GT + inter-robot loop closure lines for a Kimera-Multi variant. Loads poses from the highest-numbered `kimera_distributed_poses_*.csv` per robot. Alignment from `evo_ape.zip` or Umeyama fallback.
+
+### plot_combined_baselines_traj.py — 2×2 ours-vs-baselines figure
+```bash
+python3 plot_combined_baselines_traj.py
+python3 plot_combined_baselines_traj.py --output combined_baselines_traj
+```
+2×2 grid: rows = campus/ns-as and a5678/ns-as; columns = Ours (CBS+, Centralized GNC-GM) and Baselines (DGS, ASAPP, Geodesic-MESA). Alignment from per-method `evo_ape.zip` or Umeyama. Single legend at bottom.
+
 ### plot_g2o.py — pose graph visualization
 ```bash
 python3 plot_g2o.py <file.g2o> [--only-2d] [--only-3d] [--three-planes]
@@ -210,10 +230,41 @@ python3 plot_g2o.py <file.g2o> [--only-2d] [--only-3d] [--three-planes]
 
 ## Shared Library: `utils/`
 
-All scripts import from this package — do not duplicate its functionality.
+All scripts import from this package — **do not duplicate its functionality**.
 
-- **`utils/io.py`**: `read_tum_trajectory`, `load_gt_trajectory`, `load_keyframes_csv`, `load_loop_closures_csv`, `load_alignment_from_evo_zip`, `load_frame_transform`
-- **`utils/plot.py`**: `IEEE_RC` (rcParams dict), `ROBOT_COLORS`, `save_fig`, `apply_alignment`, `apply_frame_transform`, `find_tum_position`, `mark_endpoint`
+### `utils/io.py`
+
+| Function | Description |
+|---|---|
+| `read_tum_trajectory(path)` | TUM / CSV → `(timestamps_s, positions, quaternions_xyzw)` |
+| `load_gt_trajectory(path)` | GT CSV/TUM → `(timestamps_ns, positions, rotations_xyzw)` |
+| `load_keyframes_csv(path)` | `{keyframe_id: timestamp_s}` |
+| `load_loop_closures_csv(path)` | list of loop dicts (robot1/pose1/robot2/pose2 + optional pose fields) |
+| `load_alignment_from_evo_zip(path)` | `(R, t, scale)` from evo results zip |
+| `load_frame_transform(path)` | 4×4 SE3 matrix from JSON/YAML/text |
+| `load_variant_aliases(path)` | `{raw_name: display_label}` from `variant_aliases.yaml` |
+| `apply_variant_alias(aliases, name)` | Return display label or `None` (skip) if not listed |
+| `umeyama(src, dst)` | Sim(3) alignment via SVD → `(R, t, scale)` |
+| `is_robot_dir(d)` | True if dir has `distributed/` or `dpgo/` subdir |
+| `discover_variants(exp_dir)` | Subdirs of `exp_dir` that contain at least one robot dir |
+| `discover_baselines(exp_dir)` | Dirs from `baselines/<exp_dir.name>/*/` with robots |
+| `discover_robots(exp_dir)` | `{robot_id: robot_dir_name}` — handles CBS-style `Robot N_ts.tum` |
+| `load_gt_trajectories_by_name(gt_dir, names)` | `{name: (timestamps_s, positions, rotations_xyzw)}` |
+
+### `utils/plot.py`
+
+| Function / Constant | Description |
+|---|---|
+| `IEEE_RC` | rcParams dict for IEEE single-column style |
+| `ROBOT_COLORS` | List of 6 hex colors for per-robot lines |
+| `save_fig(fig, base_path)` | Save PDF + PNG at `base_path` |
+| `apply_alignment(positions, R, t, scale)` | Apply Sim3: `scale * R @ pts + t` |
+| `apply_frame_transform(positions, T)` | Apply 4×4 SE3 to (N,3) array |
+| `find_tum_position(ts_s, timestamps, positions, max_gap_s)` | Nearest-neighbour lookup; `None` if gap > threshold |
+| `find_nearest_pose(ts_s, timestamps, positions, rotations, max_gap_s)` | Returns `(position, rotation)` or `None` |
+| `quat_xyzw_to_rotation_matrix(q)` | xyzw quaternion → 3×3 rotation matrix |
+| `rotation_angle_deg(R)` | Rotation angle in degrees from 3×3 matrix |
+| `mark_endpoint(ax, t_arr, v_arr, color)` | Dot + value annotation at last curve point |
 
 To override figure size while keeping IEEE style:
 ```python
@@ -282,7 +333,7 @@ Kimera-Multi baselines live under `baselines/<experiment>/Kimera-Multi/<robot>/`
 
 **`variant_aliases.yaml`**: maps internal variant/baseline directory names to paper-ready display labels. Only variants listed here appear in multi-variant comparison plots (recall, outlier, scalability, connectivity, rotation dist). If the file is absent, all variants are shown with raw names. Keys must exactly match directory names.
 
-**Variant auto-discovery pattern** (used by `evaluate.py`, `evaluate_loops_recall.py`, `plot_ablation.py`, `plot_loop_rotation_dist.py`): a sub-directory is a variant if it contains at least one robot dir (a dir with `distributed/` or `dpgo/` inside). Baselines are auto-discovered from `baselines/<exp_name>/*/` using the same robot-dir check.
+**Variant auto-discovery pattern**: all scripts use `discover_variants` / `discover_baselines` / `discover_robots` / `is_robot_dir` from `utils/io.py`. A sub-directory is a variant if it contains at least one robot dir (a dir with `distributed/` or `dpgo/` inside). Baselines are auto-discovered from `baselines/<exp_name>/*/`. `run_all_evaluations.py` keeps a local `discover_variants` that additionally excludes `lm_optimized/` dirs.
 
 **`loop_closures.csv` relative pose fields**: columns `qx,qy,qz,qw,tx,ty,tz` store the detected relative pose T_{robot1}^{robot2} in robot1's local frame. `load_loop_closures_csv` loads these into the dict if present; scripts that do not need them ignore them.
 

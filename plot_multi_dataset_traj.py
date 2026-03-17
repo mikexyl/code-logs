@@ -17,7 +17,8 @@ import matplotlib.lines as mlines
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
-from utils.io import read_tum_trajectory, load_gt_trajectory, load_alignment_from_evo_zip
+from utils.io import (read_tum_trajectory, load_alignment_from_evo_zip,
+                      umeyama, load_gt_trajectories_by_name)
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig, apply_alignment
 
 BASE = Path(__file__).parent
@@ -30,19 +31,6 @@ DATASETS = [
     ('gate',  'Gate',           BASE / 'gate'  / 'ns-as', BASE / 'ground_truth' / 'gate'),
 ]
 
-
-def _umeyama(src, dst):
-    mu_s, mu_d = src.mean(0), dst.mean(0)
-    sc, dc = src - mu_s, dst - mu_d
-    n = src.shape[0]
-    sigma2 = (sc ** 2).sum() / n
-    H = sc.T @ dc / n
-    U, D, Vt = np.linalg.svd(H)
-    det_sign = np.linalg.det(Vt.T @ U.T)
-    S = np.diag([1., 1., det_sign])
-    R = Vt.T @ S @ U.T
-    s = (D * np.array([1., 1., det_sign])).sum() / sigma2 if sigma2 > 0 else 1.
-    return R, mu_d - s * R @ mu_s, float(s)
 
 
 def _load_tum_positions(ns_as_dir):
@@ -70,25 +58,12 @@ def _load_tum_positions(ns_as_dir):
     return result  # {robot_name: (rid, positions)}
 
 
-def _load_gt(ns_as_dir, gt_dir):
-    robot_names = [d.name for d in sorted(ns_as_dir.iterdir())
-                   if d.is_dir() and (d / 'dpgo').is_dir()]
-    gt = {}
-    for rname in robot_names:
-        for ext in ('.txt', '.csv'):
-            p = gt_dir / (rname + ext)
-            if p.exists():
-                _, pos, _ = load_gt_trajectory(str(p))
-                if len(pos):
-                    gt[rname] = np.array(pos)
-                break
-    return gt
-
-
 def load_dataset(ns_as_dir, gt_dir):
     """Returns (aligned_positions, gt_positions) both {robot_name: (N,3)}."""
     raw = _load_tum_positions(ns_as_dir)
-    gt  = _load_gt(ns_as_dir, gt_dir)
+    robot_names = list(raw.keys())
+    gt_full = load_gt_trajectories_by_name(gt_dir, robot_names)
+    gt = {name: pos for name, (_, pos, _) in gt_full.items()}
 
     # Find alignment: prefer evo_ape.zip at ns_as_dir, then lm_optimized/
     R, t, s = np.eye(3), np.zeros(3), 1.0
@@ -111,7 +86,7 @@ def load_dataset(ns_as_dir, gt_dir):
             src_pts.append(pos[idx])
             dst_pts.append(g[idx])
         if src_pts:
-            R, t, s = _umeyama(np.vstack(src_pts), np.vstack(dst_pts))
+            R, t, s = umeyama(np.vstack(src_pts), np.vstack(dst_pts))
 
     aligned = {rname: apply_alignment(pos, R, t, s)
                for rname, (_, pos) in raw.items()}

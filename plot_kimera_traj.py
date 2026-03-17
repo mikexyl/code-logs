@@ -17,7 +17,7 @@ import yaml
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
-from utils.io import load_alignment_from_evo_zip, load_gt_trajectory
+from utils.io import load_alignment_from_evo_zip, load_gt_trajectory, umeyama
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig, apply_alignment
 
 
@@ -161,19 +161,6 @@ def main():
 
     # If no evo_ape.zip, compute Umeyama alignment from timestamp-matched pairs
     if not evo_zip.exists() and gt_by_rid:
-        def _umeyama(src: np.ndarray, dst: np.ndarray):
-            mu_s, mu_d = src.mean(0), dst.mean(0)
-            sc, dc = src - mu_s, dst - mu_d
-            n = src.shape[0]
-            sigma2 = (sc ** 2).sum() / n
-            H = (sc.T @ dc) / n
-            U, D, Vt = np.linalg.svd(H)
-            det_sign = np.linalg.det(Vt.T @ U.T)
-            S = np.diag([1.0, 1.0, det_sign])
-            R_u = Vt.T @ S @ U.T
-            s_u = (D * np.array([1.0, 1.0, det_sign])).sum() / sigma2 if sigma2 > 0 else 1.0
-            return R_u, mu_d - s_u * R_u @ mu_s, float(s_u)
-
         src_pts, dst_pts = [], []
         for rid in robot_ids:
             if rid not in robot_poses or rid not in gt_by_rid:
@@ -214,7 +201,7 @@ def main():
                 src_pts.append(est[idx])
                 dst_pts.append(gt_pos_arr[idx])
         if src_pts:
-            R_align, t_align, s_align = _umeyama(np.vstack(src_pts), np.vstack(dst_pts))
+            R_align, t_align, s_align = umeyama(np.vstack(src_pts), np.vstack(dst_pts))
             print(f"Umeyama alignment  scale={s_align:.4f}")
 
     # ── Plot ──────────────────────────────────────────────────────────────────

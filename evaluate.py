@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 from utils.io import (read_tum_trajectory, load_alignment_from_evo_zip,
                       load_frame_transform, load_keyframes_csv,
-                      load_loop_closures_csv)
+                      load_loop_closures_csv, is_robot_dir, discover_variants)
 from utils.plot import apply_alignment, apply_frame_transform, find_tum_position
 
 
@@ -345,19 +345,6 @@ def find_trajectory_pairs(experiment_folder, gt_folder=None, gt_exp_name=None):
     return pairs
 
 
-def _is_robot_dir(d: Path) -> bool:
-    return (d / 'distributed').is_dir() or (d / 'dpgo').is_dir()
-
-
-def discover_variants(exp_dir: Path) -> list[Path]:
-    """Return subdirs of exp_dir that contain robot subdirs."""
-    variants = []
-    for d in sorted(exp_dir.iterdir()):
-        if not d.is_dir():
-            continue
-        if any(_is_robot_dir(sub) for sub in d.iterdir() if sub.is_dir()):
-            variants.append(d)
-    return variants
 
 
 def run_evaluation(variant_dir: str, gt_folder, gt_exp_name: str, tf_file):

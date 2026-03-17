@@ -19,73 +19,16 @@ Usage:
 """
 
 import argparse
-import re
 from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
-import yaml
 
 from utils.io import (load_gt_trajectory, load_keyframes_csv, load_loop_closures_csv,
-                      load_variant_aliases, apply_variant_alias)
+                      load_variant_aliases, apply_variant_alias,
+                      discover_robots, discover_variants, discover_baselines,
+                      load_gt_trajectories_by_name)
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig
-
-
-# ---------------------------------------------------------------------------
-# Robot discovery + loop loading
-# ---------------------------------------------------------------------------
-
-def discover_robots(exp_dir: Path) -> dict[int, str]:
-    """Return {robot_id: robot_dir_name} (yaml first, dpgo fallback)."""
-    yaml_path = exp_dir / 'robot_names.yaml'
-    if yaml_path.exists():
-        with open(yaml_path) as f:
-            data = yaml.safe_load(f)
-        id_to_name: dict[int, str] = {}
-        for key, name in data.items():
-            m = re.match(r'robot(\d+)_name', key)
-            if m:
-                id_to_name[int(m.group(1))] = name
-        return id_to_name
-
-    id_to_name = {}
-    for robot_dir in sorted(exp_dir.iterdir()):
-        if not robot_dir.is_dir():
-            continue
-        dpgo = robot_dir / 'dpgo'
-        if not dpgo.is_dir():
-            continue
-        for tum in sorted(dpgo.glob('Robot *.tum')):
-            try:
-                rid = int(tum.stem.split()[-1])
-            except ValueError:
-                continue
-            id_to_name[rid] = robot_dir.name
-    return id_to_name
-
-
-def _is_robot_dir(d: Path) -> bool:
-    return (d / 'distributed').is_dir() or (d / 'dpgo').is_dir()
-
-
-def discover_variants(exp_dir: Path) -> list[Path]:
-    """Return subdirs of exp_dir that contain robot subdirs."""
-    variants = []
-    for d in sorted(exp_dir.iterdir()):
-        if not d.is_dir():
-            continue
-        if any(_is_robot_dir(sub) for sub in d.iterdir() if sub.is_dir()):
-            variants.append(d)
-    return variants
-
-
-def discover_baselines(exp_dir: Path) -> list[Path]:
-    """Return baseline method dirs from baselines/<exp_dir.name>/*/."""
-    baseline_root = exp_dir.parent / 'baselines' / exp_dir.name
-    if not baseline_root.exists():
-        return []
-    return [d for d in sorted(baseline_root.iterdir())
-            if d.is_dir() and discover_robots(d)]
 
 
 def load_detected_loops(exp_dir: Path, id_to_name: dict[int, str]) -> list[dict]:
@@ -127,16 +70,9 @@ def load_detected_loops(exp_dir: Path, id_to_name: dict[int, str]) -> list[dict]
 # ---------------------------------------------------------------------------
 
 def load_gt_rotations(gt_dir: Path, robot_names: list[str]) -> dict[str, tuple]:
-    """Return {robot_name: (timestamps_s (N,), rotations_xyzw (N,4))}."""
-    result: dict[str, tuple] = {}
-    for name in robot_names:
-        for ext in ('.csv', '.txt'):
-            p = gt_dir / (name + ext)
-            if p.exists():
-                ts_ns, _, rots = load_gt_trajectory(str(p))
-                result[name] = (ts_ns / 1e9, rots)
-                break
-    return result
+    """Return {robot_name: (timestamps_s, rotations_xyzw)}."""
+    full = load_gt_trajectories_by_name(gt_dir, robot_names)
+    return {name: (ts, rots) for name, (ts, _, rots) in full.items()}
 
 
 def nearest_rotation(ts_s: float, timestamps: np.ndarray,

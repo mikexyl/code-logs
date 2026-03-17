@@ -22,72 +22,10 @@ import matplotlib.colors as mcolors
 
 from utils.io import (read_tum_trajectory, load_alignment_from_evo_zip,
                       load_keyframes_csv, load_loop_closures_csv,
-                      load_gt_trajectory)
-from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig, apply_alignment, find_tum_position
-
-
-# ---------------------------------------------------------------------------
-# Geometry helpers (mirrored from evaluate_loops_recall.py)
-# ---------------------------------------------------------------------------
-
-def _nearest_pose(ts_s, timestamps, positions, rotations, max_gap_s=2.5):
-    idx = int(np.argmin(np.abs(timestamps - ts_s)))
-    if abs(float(timestamps[idx]) - ts_s) > max_gap_s:
-        return None
-    return positions[idx], rotations[idx]
-
-
-def _quat_xyzw_to_rot(q):
-    x, y, z, w = float(q[0]), float(q[1]), float(q[2]), float(q[3])
-    return np.array([
-        [1 - 2*(y*y + z*z),     2*(x*y - z*w),     2*(x*z + y*w)],
-        [    2*(x*y + z*w), 1 - 2*(x*x + z*z),     2*(y*z - x*w)],
-        [    2*(x*z - y*w),     2*(y*z + x*w), 1 - 2*(x*x + y*y)],
-    ])
-
-
-def _rot_angle_deg(R):
-    cos_val = float(np.clip((np.trace(R) - 1) / 2, -1.0, 1.0))
-    return float(np.degrees(np.arccos(cos_val)))
-
-
-# ---------------------------------------------------------------------------
-# Robot discovery
-# ---------------------------------------------------------------------------
-
-def discover_robots(variant_dir: Path) -> dict[int, str]:
-    """Return {robot_id: robot_dir_name} by scanning dpgo/Robot N.tum files."""
-    id_to_name: dict[int, str] = {}
-    for robot_dir in sorted(variant_dir.iterdir()):
-        if not robot_dir.is_dir():
-            continue
-        dpgo = robot_dir / 'dpgo'
-        if not dpgo.is_dir():
-            continue
-        for tum in sorted(dpgo.glob('Robot *.tum')):
-            try:
-                rid = int(tum.stem.split()[-1])
-            except ValueError:
-                continue
-            id_to_name[rid] = robot_dir.name
-    return id_to_name
-
-
-# ---------------------------------------------------------------------------
-# Load GT poses
-# ---------------------------------------------------------------------------
-
-def load_gt_poses(gt_dir: Path, robot_names: list[str]) -> dict[str, tuple]:
-    """Return {robot_name: (timestamps_s, positions, rotations_xyzw)}."""
-    result: dict[str, tuple] = {}
-    for name in robot_names:
-        for ext in ('.csv', '.txt'):
-            p = gt_dir / (name + ext)
-            if p.exists():
-                ts_ns, pos, rots = load_gt_trajectory(str(p))
-                result[name] = (ts_ns / 1e9, pos, rots)
-                break
-    return result
+                      discover_robots, load_gt_trajectories_by_name)
+from utils.plot import (IEEE_RC, ROBOT_COLORS, save_fig, apply_alignment,
+                        find_tum_position, find_nearest_pose,
+                        quat_xyzw_to_rotation_matrix, rotation_angle_deg)
 
 
 # ---------------------------------------------------------------------------
@@ -176,20 +114,20 @@ def collect_loop_data(
             if has_pose and n1 in gt_poses and n2 in gt_poses:
                 ts1_arr, pos1_arr, rot1_arr = gt_poses[n1]
                 ts2_arr, pos2_arr, rot2_arr = gt_poses[n2]
-                pose1 = _nearest_pose(t1, ts1_arr, pos1_arr, rot1_arr, max_gap_s)
-                pose2 = _nearest_pose(t2, ts2_arr, pos2_arr, rot2_arr, max_gap_s)
+                pose1 = find_nearest_pose(t1, ts1_arr, pos1_arr, rot1_arr, max_gap_s)
+                pose2 = find_nearest_pose(t2, ts2_arr, pos2_arr, rot2_arr, max_gap_s)
                 if pose1 is not None and pose2 is not None:
                     p_gt1, r_gt1 = pose1
                     p_gt2, r_gt2 = pose2
-                    R1 = _quat_xyzw_to_rot(r_gt1)
-                    R2 = _quat_xyzw_to_rot(r_gt2)
+                    R1 = quat_xyzw_to_rotation_matrix(r_gt1)
+                    R2 = quat_xyzw_to_rotation_matrix(r_gt2)
                     p_rel_gt = R1.T @ (p_gt2 - p_gt1)
                     R_rel_gt = R1.T @ R2
                     gt_dist = float(np.linalg.norm(p_rel_gt))
                     p_det = np.array([lc['tx'], lc['ty'], lc['tz']])
-                    R_det = _quat_xyzw_to_rot(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
+                    R_det = quat_xyzw_to_rotation_matrix(np.array([lc['qx'], lc['qy'], lc['qz'], lc['qw']]))
                     trans_err = float(np.linalg.norm(p_det - p_rel_gt))
-                    rot_err = _rot_angle_deg(R_det.T @ R_rel_gt)
+                    rot_err = rotation_angle_deg(R_det.T @ R_rel_gt)
                     is_outlier = (trans_err > max(trans_abs, trans_rel * gt_dist)
                                   or rot_err > rot_thr)
 
@@ -221,7 +159,7 @@ def plot(variant_dir: Path, gt_dir: Path, max_trans_err: float):
         sys.exit(1)
     print(f"Robots: {id_to_name}")
 
-    gt_poses = load_gt_poses(gt_dir, list(id_to_name.values()))
+    gt_poses = load_gt_trajectories_by_name(gt_dir, list(id_to_name.values()))
 
     # Collect loop data
     records = collect_loop_data(variant_dir, id_to_name, gt_poses,

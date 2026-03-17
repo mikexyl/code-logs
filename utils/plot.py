@@ -89,6 +89,34 @@ def save_fig(fig, base_path, suffixes=('.pdf', '.png'), **kwargs):
         print(f'Saved to {out}')
 
 
+def quat_xyzw_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
+    """Convert a quaternion in xyzw order to a 3×3 rotation matrix."""
+    x, y, z, w = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+    return np.array([
+        [1 - 2*(y*y + z*z),     2*(x*y - z*w),     2*(x*z + y*w)],
+        [    2*(x*y + z*w), 1 - 2*(x*x + z*z),     2*(y*z - x*w)],
+        [    2*(x*z - y*w),     2*(y*z + x*w), 1 - 2*(x*x + y*y)],
+    ])
+
+
+def rotation_angle_deg(R: np.ndarray) -> float:
+    """Return the rotation angle in degrees for a 3×3 rotation matrix."""
+    cos_val = float(np.clip((np.trace(R) - 1) / 2, -1.0, 1.0))
+    return float(np.degrees(np.arccos(cos_val)))
+
+
+def find_nearest_pose(ts_s: float, timestamps: np.ndarray,
+                      positions: np.ndarray, rotations: np.ndarray,
+                      max_gap_s: float = 2.5):
+    """Return the (position, rotation) nearest to *ts_s*, or ``None`` if gap > *max_gap_s*."""
+    if len(timestamps) == 0:
+        return None
+    idx = int(np.argmin(np.abs(timestamps - ts_s)))
+    if abs(float(timestamps[idx]) - ts_s) > max_gap_s:
+        return None
+    return positions[idx], rotations[idx]
+
+
 def mark_endpoint(ax, t_arr, v_arr, color, fmt='{:.0f}'):
     """Dot + value annotation at the last point of a curve."""
     ax.plot(t_arr[-1], v_arr[-1], 'o', color=color, markersize=3, zorder=5,

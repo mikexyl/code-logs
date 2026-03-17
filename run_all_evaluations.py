@@ -15,6 +15,10 @@ import sys
 import zipfile
 from pathlib import Path
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent))
+from utils.io import is_robot_dir
+
 # ---------------------------------------------------------------------------
 # Dataset configuration
 # ---------------------------------------------------------------------------

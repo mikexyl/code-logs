@@ -23,7 +23,8 @@ import matplotlib.lines as mlines
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from utils.io import read_tum_trajectory, load_gt_trajectory, load_alignment_from_evo_zip
+from utils.io import (read_tum_trajectory, load_gt_trajectory,
+                      load_alignment_from_evo_zip, umeyama)
 from utils.plot import IEEE_RC, save_fig, apply_alignment
 
 BASE = Path(__file__).parent
@@ -108,18 +109,6 @@ def _tum_positions(tum_list):
     return out
 
 
-def _umeyama(src, dst):
-    mu_s, mu_d = src.mean(0), dst.mean(0)
-    sc, dc = src - mu_s, dst - mu_d
-    n = src.shape[0]
-    sigma2 = (sc**2).sum() / n
-    H = sc.T @ dc / n
-    U, D, Vt = np.linalg.svd(H)
-    det_sign = np.linalg.det(Vt.T @ U.T)
-    S = np.diag([1., 1., det_sign])
-    R = Vt.T @ S @ U.T
-    s = (D * np.array([1., 1., det_sign])).sum() / sigma2 if sigma2 > 0 else 1.
-    return R, mu_d - s * R @ mu_s, float(s)
 
 
 def _align_to_gt(positions, gt):
@@ -136,7 +125,7 @@ def _align_to_gt(positions, gt):
         dst_pts.append(g[idx])
     if not src_pts:
         return positions
-    R, t, s = _umeyama(np.vstack(src_pts), np.vstack(dst_pts))
+    R, t, s = umeyama(np.vstack(src_pts), np.vstack(dst_pts))
     return {rc: apply_alignment(p, R, t, s) for rc, p in positions.items()}
 
 
