@@ -339,6 +339,9 @@ def main():
         for ax in axes[row]:
             ax.set_xlim(xmin, xmax)
             ax.set_ylim(ymin, ymax)
+        # Hide y-tick labels on right column
+        plt.setp(axes[row, 1].get_yticklabels(), visible=False)
+        axes[row, 1].tick_params(axis='y', length=0)
 
     axes[1, 0].set_xlabel('x (m)')
     axes[1, 1].set_xlabel('x (m)')
