@@ -359,7 +359,7 @@ def main():
             all_labels.append(name)
 
     fig.legend(all_handles, all_labels, loc='lower center',
-               bbox_to_anchor=(0.5, -0.01), ncol=len(all_handles),
+               bbox_to_anchor=(0.5, -0.04), ncol=len(all_handles),
                framealpha=0.9, edgecolor='none',
                handlelength=1.5, handletextpad=0.4, columnspacing=1.2,
                fontsize=8)
