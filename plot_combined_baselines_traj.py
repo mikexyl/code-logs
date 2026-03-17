@@ -266,12 +266,14 @@ def _draw_panel(ax, methods, gt_by_robot, show_methods, panel_label, legend_hand
             ax.plot(pos[:, 0], pos[:, 1], color=color, ls=ls, lw=lw, alpha=alpha, label=lbl)
             first = False
 
-    ax.set_aspect('equal')
+    # adjustable='datalim' keeps physical axes size equal across rows;
+    # matplotlib pads data limits instead of shrinking the axes box.
+    ax.set_aspect('equal', adjustable='datalim')
     ax.grid(True, alpha=0.3, linewidth=0.3)
 
     # Panel label inside bottom-left
     ax.text(0.03, 0.03, panel_label, transform=ax.transAxes,
-            fontsize=8, va='bottom', ha='left',
+            fontsize=9, va='bottom', ha='left',
             bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.75, ec='none'))
 
     # Collect legend handles (once, from first panel)
@@ -304,18 +306,16 @@ def main():
     # ── Figure ───────────────────────────────────────────────────────────────
     plt.rcParams.update({
         **IEEE_RC,
-        'figure.figsize': (7.0, 5.5),
-        'legend.fontsize': 7,
-        'xtick.labelsize': 6,
-        'ytick.labelsize': 6,
+        'figure.figsize': (7.0, 6.0),
+        'axes.labelsize': 8,
+        'legend.fontsize': 8,
+        'xtick.labelsize': 7,
+        'ytick.labelsize': 7,
     })
 
-    fig, axes = plt.subplots(2, 2, squeeze=False)
-
-    # Share axes within each row
-    for row in range(2):
-        axes[row, 1].sharex(axes[row, 0])
-        axes[row, 1].sharey(axes[row, 0])
+    fig, axes = plt.subplots(2, 2, squeeze=False,
+                             gridspec_kw={'height_ratios': [1, 1],
+                                          'width_ratios':  [1, 1]})
 
     legend_handles_ours = {}
     legend_handles_base = {}
@@ -326,17 +326,25 @@ def main():
         _draw_panel(axes[row, 1], methods, gt, BASELINE_METHODS,
                     'Baselines', legend_handles_base)
 
-        # Hide shared x-tick labels on top row
-        if row == 0:
-            plt.setp(axes[row, 0].get_xticklabels(), visible=False)
-            plt.setp(axes[row, 1].get_xticklabels(), visible=False)
-
         # Row label (experiment name) on left y-axis
-        axes[row, 0].set_ylabel(f'{exp_name}\ny (m)', fontsize=7)
+        axes[row, 0].set_ylabel(f'{exp_name}\ny (m)', fontsize=8)
         axes[row, 1].set_ylabel('')
+
+    # Sync limits within each row so both columns show identical extent
+    for row in range(2):
+        xl = [ax.get_xlim() for ax in axes[row]]
+        yl = [ax.get_ylim() for ax in axes[row]]
+        xmin = min(x[0] for x in xl); xmax = max(x[1] for x in xl)
+        ymin = min(y[0] for y in yl); ymax = max(y[1] for y in yl)
+        for ax in axes[row]:
+            ax.set_xlim(xmin, xmax)
+            ax.set_ylim(ymin, ymax)
 
     axes[1, 0].set_xlabel('x (m)')
     axes[1, 1].set_xlabel('x (m)')
+    # Hide x-tick labels on top row to reduce gap
+    plt.setp(axes[0, 0].get_xticklabels(), visible=False)
+    plt.setp(axes[0, 1].get_xticklabels(), visible=False)
 
     # Single legend combining ours + baselines in fixed order
     all_handles = []
@@ -348,13 +356,13 @@ def main():
             all_labels.append(name)
 
     fig.legend(all_handles, all_labels, loc='lower center',
-               bbox_to_anchor=(0.5, -0.04), ncol=len(all_handles),
+               bbox_to_anchor=(0.5, -0.01), ncol=len(all_handles),
                framealpha=0.9, edgecolor='none',
                handlelength=1.5, handletextpad=0.4, columnspacing=1.2,
-               fontsize=7)
+               fontsize=8)
 
-    plt.tight_layout(pad=0.3, h_pad=0.0, w_pad=0.3)
-    plt.subplots_adjust(bottom=0.10)
+    plt.tight_layout(pad=0.4, h_pad=0.3, w_pad=0.3)
+    plt.subplots_adjust(bottom=0.08)
 
     out = BASE / args.output if args.output else BASE / 'combined_baselines_traj'
     save_fig(fig, out)
