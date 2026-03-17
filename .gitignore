@@ -1,4 +1,6 @@
 *.png
+__pycache__/
+*.py[cod]
 
 # Experiment data folders
 a12/
