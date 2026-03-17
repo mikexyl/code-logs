@@ -289,8 +289,8 @@ def main():
     args = ap.parse_args()
 
     datasets = [
-        ('campus', BASE / 'campus' / 'ns-as',  BASE / 'ground_truth' / 'campus'),
-        ('a5678',  BASE / 'a5678'  / 'ns-as',  BASE / 'ground_truth' / 'a5678'),
+        ('Campus',              BASE / 'campus' / 'ns-as',  BASE / 'ground_truth' / 'campus'),
+        ('GrAco Aerial Loop 3', BASE / 'a5678'  / 'ns-as',  BASE / 'ground_truth' / 'a5678'),
     ]
 
     print('Loading data...')
@@ -348,13 +348,13 @@ def main():
             all_labels.append(name)
 
     fig.legend(all_handles, all_labels, loc='lower center',
-               bbox_to_anchor=(0.5, 0.0), ncol=len(all_handles),
+               bbox_to_anchor=(0.5, -0.04), ncol=len(all_handles),
                framealpha=0.9, edgecolor='none',
                handlelength=1.5, handletextpad=0.4, columnspacing=1.2,
                fontsize=7)
 
     plt.tight_layout(pad=0.3, h_pad=0.0, w_pad=0.3)
-    plt.subplots_adjust(bottom=0.08)
+    plt.subplots_adjust(bottom=0.10)
 
     out = BASE / args.output if args.output else BASE / 'combined_baselines_traj'
     save_fig(fig, out)
