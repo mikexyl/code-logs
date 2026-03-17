@@ -327,7 +327,7 @@ def main():
                     'Baselines', legend_handles_base)
 
         # Row label (experiment name) on left y-axis
-        axes[row, 0].set_ylabel(f'{exp_name}\ny (m)', fontsize=16)
+        axes[row, 0].set_ylabel('y (m)', fontsize=16)
         axes[row, 1].set_ylabel('')
 
     # Sync limits within each row so both columns show identical extent
@@ -359,7 +359,7 @@ def main():
             all_labels.append(name)
 
     fig.legend(all_handles, all_labels, loc='lower center',
-               bbox_to_anchor=(0.5, -0.04), ncol=len(all_handles),
+               bbox_to_anchor=(0.5, -0.16), ncol=3,
                framealpha=0.9, edgecolor='none',
                handlelength=1.5, handletextpad=0.4, columnspacing=1.2,
                fontsize=16)
