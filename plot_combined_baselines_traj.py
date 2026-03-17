@@ -273,7 +273,7 @@ def _draw_panel(ax, methods, gt_by_robot, show_methods, panel_label, legend_hand
 
     # Panel label inside bottom-left
     ax.text(0.03, 0.03, panel_label, transform=ax.transAxes,
-            fontsize=9, va='bottom', ha='left',
+            fontsize=18, va='bottom', ha='left',
             bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.75, ec='none'))
 
     # Collect legend handles (once, from first panel)
@@ -307,10 +307,10 @@ def main():
     plt.rcParams.update({
         **IEEE_RC,
         'figure.figsize': (7.0, 6.0),
-        'axes.labelsize': 8,
-        'legend.fontsize': 8,
-        'xtick.labelsize': 7,
-        'ytick.labelsize': 7,
+        'axes.labelsize': 16,
+        'legend.fontsize': 16,
+        'xtick.labelsize': 14,
+        'ytick.labelsize': 14,
     })
 
     fig, axes = plt.subplots(2, 2, squeeze=False,
@@ -327,7 +327,7 @@ def main():
                     'Baselines', legend_handles_base)
 
         # Row label (experiment name) on left y-axis
-        axes[row, 0].set_ylabel(f'{exp_name}\ny (m)', fontsize=8)
+        axes[row, 0].set_ylabel(f'{exp_name}\ny (m)', fontsize=16)
         axes[row, 1].set_ylabel('')
 
     # Sync limits within each row so both columns show identical extent
@@ -362,7 +362,7 @@ def main():
                bbox_to_anchor=(0.5, -0.04), ncol=len(all_handles),
                framealpha=0.9, edgecolor='none',
                handlelength=1.5, handletextpad=0.4, columnspacing=1.2,
-               fontsize=8)
+               fontsize=16)
 
     plt.tight_layout(pad=0.4, h_pad=0.3, w_pad=0.3)
     plt.subplots_adjust(bottom=0.08)
