@@ -204,8 +204,8 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
                     linestyle='--', label=label)
             gt_plotted = True
 
-    ax.set_xlabel('X (m)')
-    ax.set_ylabel('Y (m)')
+    ax.set_xlabel('x (m)')
+    ax.set_ylabel('y (m)')
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3, linewidth=0.3)
 
@@ -214,7 +214,7 @@ def plot_aligned_trajectories(experiment_folder, pairs, tf_gt_robot=None):
         n = len(handles)
         ncol = n  # single row
         fig.legend(handles, labels, loc='lower center',
-                   bbox_to_anchor=(0.5, 0.0), ncol=ncol,
+                   bbox_to_anchor=(0.5, -0.04), ncol=ncol,
                    framealpha=0.9, edgecolor='none',
                    handlelength=1.0, handletextpad=0.3, columnspacing=0.8)
 

@@ -73,7 +73,8 @@ def discover_robots(exp_dir: Path) -> dict[int, str]:
             continue
         for tum in sorted(dpgo.glob('Robot *.tum')):
             try:
-                rid = int(tum.stem.split()[-1])
+                # handles both "Robot N.tum" and "Robot N_timestamp.tum"
+                rid = int(tum.stem.split()[-1].split('_')[0])
             except ValueError:
                 continue
             id_to_name[rid] = robot_dir.name
@@ -1023,6 +1024,11 @@ def main() -> None:
     # Discover variants or fall back to single-experiment mode
     variants  = discover_variants(exp_dir)
     baselines = discover_baselines(exp_dir)
+
+    # Also include the base experiment dir itself if it has robot dirs with
+    # distributed/ data (e.g. when sub-variants share the same loop closures)
+    if variants and discover_robots(exp_dir):
+        variants = [exp_dir] + [v for v in variants if v != exp_dir]
 
     eval_dirs_variant  = variants  if variants  else []
     eval_dirs_baseline = baselines if baselines else []
