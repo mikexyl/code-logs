@@ -135,6 +135,80 @@ def load_gt_loops(gt_dir: Path) -> dict[int, list[dict]]:
     return result
 
 
+def load_gt_loops_with_dist(gt_dir: Path) -> list[dict]:
+    """Load all GT loops from the largest-angle file, including gt_dist = ||tx,ty,tz||.
+
+    Returns list of dicts with keys: robot_i, t_i_s, robot_j, t_j_s, _key, gt_dist.
+    """
+    angle_files = sorted(gt_dir.glob('gt_loops_angle*.csv'),
+                         key=lambda p: int(re.search(r'angle(\d+)', p.stem).group(1)))
+    if not angle_files:
+        return []
+    with open(angle_files[-1]) as f:
+        rows = list(csv.DictReader(f))
+    loops = []
+    for row in rows:
+        ri, ti_ns = row['robot_i'], int(float(row['timestamp_i_ns']))
+        rj, tj_ns = row['robot_j'], int(float(row['timestamp_j_ns']))
+        if ri > rj:
+            ri, rj, ti_ns, tj_ns = rj, ri, tj_ns, ti_ns
+        try:
+            tx, ty, tz = float(row['tx']), float(row['ty']), float(row['tz'])
+        except (KeyError, ValueError):
+            tx, ty, tz = 0.0, 0.0, 0.0
+        loops.append({
+            'robot_i': row['robot_i'],
+            't_i_s':   float(row['timestamp_i_ns']) / 1e9,
+            'robot_j': row['robot_j'],
+            't_j_s':   float(row['timestamp_j_ns']) / 1e9,
+            '_key':    (ri, ti_ns, rj, tj_ns),
+            'gt_dist': float(np.sqrt(tx**2 + ty**2 + tz**2)),
+        })
+    return loops
+
+
+def compute_trans_recall(
+    detected: list[dict],
+    gt_all_loops: list[dict],
+    tol_s: float,
+    trans_edges: list[float],
+) -> tuple[list[float], list[float]]:
+    """Compute recall bucketed by GT loop translation distance.
+
+    trans_edges defines bin boundaries, e.g. [0, 5, 10, 15, 20].
+    Returns (bin_centers, recalls) for len(trans_edges)-1 bins.
+    """
+    det_by_pair: dict[tuple[str, str], list[tuple[float, float]]] = {}
+    for lc in detected:
+        key = (min(lc['name1'], lc['name2']), max(lc['name1'], lc['name2']))
+        if lc['name1'] <= lc['name2']:
+            det_by_pair.setdefault(key, []).append((lc['t1_s'], lc['t2_s']))
+        else:
+            det_by_pair.setdefault(key, []).append((lc['t2_s'], lc['t1_s']))
+
+    bins = list(zip(trans_edges[:-1], trans_edges[1:]))
+    bin_centers = [(lo + hi) / 2 for lo, hi in bins]
+    counts = [[0, 0] for _ in bins]  # [n_detected, n_total]
+
+    for gt in gt_all_loops:
+        d = gt['gt_dist']
+        for i, (lo, hi) in enumerate(bins):
+            if lo <= d < hi:
+                ri, ti = gt['robot_i'], gt['t_i_s']
+                rj, tj = gt['robot_j'], gt['t_j_s']
+                pair_key = (min(ri, rj), max(ri, rj))
+                gt_ta, gt_tb = (ti, tj) if ri <= rj else (tj, ti)
+                counts[i][1] += 1
+                for ta, tb in det_by_pair.get(pair_key, []):
+                    if abs(ta - gt_ta) <= tol_s and abs(tb - gt_tb) <= tol_s:
+                        counts[i][0] += 1
+                        break
+                break
+
+    recalls = [c[0] / c[1] if c[1] > 0 else float('nan') for c in counts]
+    return bin_centers, recalls
+
+
 def compute_bucket_loops(
     gt_by_angle: dict[int, list[dict]],
     angles: list[int],
@@ -221,6 +295,9 @@ def compute_recall(
 # Per-variant evaluation
 # ---------------------------------------------------------------------------
 
+TRANS_EDGES = [0, 2, 4, 6, 8, 10, 15]
+
+
 def evaluate_one(
     variant_dir: Path,
     buckets: dict[tuple[int, int], list[dict]],
@@ -231,10 +308,12 @@ def evaluate_one(
     trans_abs: float = 2.0,
     trans_rel: float = 0.10,
     rot_thr: float = 40.0,
+    gt_all_loops: list[dict] | None = None,
 ) -> dict | None:
     """Evaluate recall for one variant dir. Saves CSV/txt.
 
-    Returns {label, xs, recalls, inlier_recalls, inlier_pr} for plotting, or None on failure.
+    Returns {label, xs, recalls, inlier_recalls, inlier_pr,
+             xs_trans, recalls_trans} for plotting, or None on failure.
     inlier_recalls and inlier_pr are only present when gt_poses is provided and loops have poses.
     """
     id_to_name = discover_robots(variant_dir)
@@ -314,6 +393,11 @@ def evaluate_one(
 
     result: dict = {'label': variant_dir.name, 'xs': xs, 'recalls': recalls,
                     'n_detected': n_detected}
+    if gt_all_loops:
+        xs_trans, recalls_trans = compute_trans_recall(
+            detected, gt_all_loops, tol_s, TRANS_EDGES)
+        result['xs_trans'] = xs_trans
+        result['recalls_trans'] = recalls_trans
     if inlier_set is not None:
         result['inlier_recalls'] = inlier_recalls
         result['inlier_pr'] = len(inlier_set) / max(n_detected, 1)
@@ -387,27 +471,55 @@ def plot_single(data: dict, out_dir: Path) -> None:
 def plot_comparison(variants: list[dict], baselines: list[dict], out_dir: Path) -> None:
     """Multi-variant recall comparison, with baselines shown as dashed lines.
 
-    For each series, also draws inlier recall (dashed/dash-dot) and inlier/PR (dotted)
-    if inlier data is available.
+    Two subplots side by side: recall vs GT rotation (left), recall vs GT translation (right).
+    The translation subplot is omitted if no series have xs_trans data.
     """
-    plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 3.5 * 9 / 16)})
-    fig, ax = plt.subplots()
+    all_series = variants + baselines
+    has_trans = any('xs_trans' in d for d in all_series)
+
+    if has_trans:
+        plt.rcParams.update({**IEEE_RC, 'figure.figsize': (5.0, 2.0)})
+        fig, (ax_rot, ax_trans) = plt.subplots(1, 2, sharey=True)
+    else:
+        plt.rcParams.update({**IEEE_RC, 'figure.figsize': (2.5, 2.0)})
+        fig, ax_rot = plt.subplots()
+        ax_trans = None
+
     for i, d in enumerate(variants):
         color = ROBOT_COLORS[i % len(ROBOT_COLORS)]
-        ax.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3, label=d['label'])
+        ax_rot.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3,
+                    label=d['label'])
+        if ax_trans is not None and 'xs_trans' in d:
+            ax_trans.plot(d['xs_trans'], d['recalls_trans'], color=color,
+                          marker='o', markersize=3, label=d['label'])
     for i, d in enumerate(baselines):
         color = ROBOT_COLORS[(len(variants) + i) % len(ROBOT_COLORS)]
-        ax.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3,
-                linestyle='--', label=d['label'])
+        ax_rot.plot(d['xs'], d['recalls'], color=color, marker='o', markersize=3,
+                    linestyle='--', label=d['label'])
+        if ax_trans is not None and 'xs_trans' in d:
+            ax_trans.plot(d['xs_trans'], d['recalls_trans'], color=color,
+                          marker='o', markersize=3, linestyle='--', label=d['label'])
+
     xs = variants[0]['xs'] if variants else baselines[0]['xs']
-    ax.set_xticks(xs)
-    ax.set_xticklabels([f'{x}°' for x in xs])
-    ax.set_xlabel('Ground-truth Loop Relative Rotation')
-    ax.set_ylabel('Recall')
-    handles, labels = ax.get_legend_handles_labels()
-    ax.legend(handles, labels, loc='upper right', fontsize=6)
-    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+    ax_rot.set_xticks(xs)
+    ax_rot.set_xticklabels([f'{x}°' for x in xs])
+    ax_rot.set_xlabel('GT Loop Relative Rotation')
+    ax_rot.set_ylabel('Recall')
+    ax_rot.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+
+    if ax_trans is not None:
+        ax_trans.set_xlabel('GT Loop Translation Distance (m)')
+        ax_trans.grid(True, alpha=0.3, linestyle='--', linewidth=0.3)
+
+    handles, labels = ax_rot.get_legend_handles_labels()
+    if ax_trans is not None:
+        fig.legend(handles, labels, loc='upper center',
+                   bbox_to_anchor=(0.5, -0.02), ncol=4, fontsize=8)
+    else:
+        ax_rot.legend(handles, labels, loc='upper center',
+                      bbox_to_anchor=(0.5, 0.04), ncol=4, fontsize=8)
     plt.tight_layout()
+    fig.subplots_adjust(bottom=0.16)
     save_fig(fig, out_dir / 'recall_comparison')
     plt.close(fig)
     print(f'Comparison → {out_dir}/recall_comparison.pdf')
@@ -932,6 +1044,9 @@ def main() -> None:
     buckets = compute_bucket_loops(gt_by_angle, angles)
     bucket_keys = sorted(buckets.keys())
 
+    gt_all_loops = load_gt_loops_with_dist(gt_dir)
+    print(f'  GT all loops (max angle, with dist): {len(gt_all_loops)}')
+
     # Discover variants or fall back to single-experiment mode
     variants  = discover_variants(exp_dir)
     baselines = discover_baselines(exp_dir)
@@ -967,7 +1082,8 @@ def main() -> None:
                        max_gap_s=args.max_gap,
                        trans_abs=args.trans_abs,
                        trans_rel=args.trans_rel,
-                       rot_thr=args.rot_thr)
+                       rot_thr=args.rot_thr,
+                       gt_all_loops=gt_all_loops or None)
 
     if single_mode:
         r = evaluate_one(exp_dir, buckets, bucket_keys, args.tol, **eval_kwargs)

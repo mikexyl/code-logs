@@ -43,8 +43,8 @@ METHOD_STYLES = {
     'CBS+':              ('-',  1.2, 0.95),
     'Centralized GNC-GM':('-',  0.8, 0.7),
     'DGS':               ('-',  0.9, 0.85),
-    'ASAPP':             ('--', 0.9, 0.85),
-    'Geodesic-MESA':     (':',  0.9, 0.85),
+    'ASAPP':             ('-',  0.9, 0.85),
+    'Geodesic-MESA':     ('-',  0.9, 0.85),
 }
 
 OURS_METHODS      = ['CBS+', 'Centralized GNC-GM']
@@ -310,10 +310,10 @@ def main():
     legend_handles_base = {}
 
     for row, (exp_name, methods, gt) in enumerate(loaded):
-        _draw_panel(axes[row, 0], methods, gt, OURS_METHODS,
-                    'CBS+', legend_handles_ours)
-        _draw_panel(axes[row, 1], methods, gt, BASELINE_METHODS,
+        _draw_panel(axes[row, 0], methods, gt, BASELINE_METHODS,
                     'Baselines', legend_handles_base)
+        _draw_panel(axes[row, 1], methods, gt, OURS_METHODS,
+                    'CBS+', legend_handles_ours)
 
         # Row label (experiment name) on left y-axis
         axes[row, 0].set_ylabel('y (m)', fontsize=16)

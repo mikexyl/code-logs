@@ -251,7 +251,9 @@ def discover_variants(exp_dir) -> list:
 def discover_baselines(exp_dir) -> list:
     """Return baseline method dirs from ``baselines/<exp_dir.name>/*/``.
 
-    Only includes dirs for which :func:`discover_robots` returns results.
+    Includes dirs that either:
+    - contain at least one robot dir (standard layout), or
+    - contain ``evo_ape.zip`` directly (pre-evaluated baselines such as Swarm-SLAM).
     """
     from pathlib import Path as _Path
     exp_dir = _Path(exp_dir)
@@ -259,7 +261,7 @@ def discover_baselines(exp_dir) -> list:
     if not baseline_root.exists():
         return []
     return [d for d in sorted(baseline_root.iterdir())
-            if d.is_dir() and discover_robots(d)]
+            if d.is_dir() and (discover_robots(d) or (d / 'evo_ape.zip').exists())]
 
 
 def discover_robots(exp_dir, yaml_fallback: bool = True) -> dict:

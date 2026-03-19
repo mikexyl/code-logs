@@ -25,3 +25,4 @@ mixvpr:        "MixVPR"
 
 # ── Baselines ──────────────────────────────────────────────────────────────────
 Kimera-Multi:  "Kimera-Multi"
+Swarm-SLAM:    "Swarm-SLAM"

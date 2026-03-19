@@ -99,6 +99,8 @@ Auto-discovers variant sub-folders and `baselines/<exp>/*/` dirs. Evaluates each
 
 Also performs **outlier analysis**: for each detected loop that carries a relative pose estimate (`tx,ty,tz,qx,qy,qz,qw` in `loop_closures.csv`), the detected pose is compared against the GT relative pose at the loop timestamps. A loop is an outlier if `translation_error > max(--trans-abs, --trans-rel × GT distance)` OR `rotation_error > --rot-thr`. Saves `outlier_comparison.pdf/png`.
 
+`recall_comparison.pdf/png` shows two side-by-side subplots: recall vs GT loop relative rotation (left) and recall vs GT loop translation distance (right), with a shared legend below.
+
 Key options:
 - `--tol`: timestamp matching tolerance in seconds (default 2.0; 5.0 gives substantially higher recall)
 - `--max-angle`: cap x-axis of the curve without re-running extraction
@@ -187,6 +189,26 @@ python3 run_all_evaluations.py [--skip_optimize] [--skip_evaluate] [--output ate
 ```
 Runs global LM+Huber optimization and ATE evaluation across all configured datasets/variants, collecting results into a single CSV.
 
+### evaluate_swarm_slam.py — Swarm-SLAM baseline evaluation
+```bash
+python3 evaluate_swarm_slam.py baselines/campus/Swarm-SLAM --gt_folder ground_truth --exp_name campus
+python3 evaluate_swarm_slam.py baselines/campus/Swarm-SLAM --gt_folder ground_truth --exp_name campus --skip_ate
+```
+Adapts the non-standard Swarm-SLAM output to the standard file layout expected by all comparison scripts.
+
+Parses the best (most-edges) `optimized_global_pose_graph.g2o` snapshot per robot, loads `pose_timestampsN.csv` to map vertex IDs to timestamps, and writes:
+- `robot_names.yaml` — so `discover_robots` can find the robots
+- `<robot>/distributed/kimera_distributed_keyframes.csv` — keyframe_id → timestamp_ns
+- `hathor/distributed/loop_closures.csv` — all inter-robot edges with relative poses
+- `baselines/<exp>/campus-Swarm-SLAM_bandwidth.npy` — dummy bandwidth dict (zeros) for scalability plots
+- Per-robot `dpgo/Robot <N>.tum` files for ATE evaluation
+- `evo_ape.zip` — ATE results
+- `trajectories_aligned.pdf/png` and `trajectories_aligned_no_loops.pdf/png`
+
+**Swarm-SLAM vertex ID encoding**: `(ord(letter) << 48) | pose_index` where `letter = chr(ord('A') + robot_id)` in the g2o file. `pose_timestampsN.csv` uses `(0x67 << 56) | vertex_id` as the GTSAM symbol prefix.
+
+Must be run before `evaluate_loops_recall.py`, `plot_algebraic_connectivity.py`, etc. to populate the standard files.
+
 ### plot_baseline.py — Kimera-Multi baseline stats
 ```bash
 python3 plot_baseline.py baselines/campus [--ate] [--gt_folder ground_truth]
@@ -247,7 +269,7 @@ All scripts import from this package — **do not duplicate its functionality**.
 | `umeyama(src, dst)` | Sim(3) alignment via SVD → `(R, t, scale)` |
 | `is_robot_dir(d)` | True if dir has `distributed/` or `dpgo/` subdir |
 | `discover_variants(exp_dir)` | Subdirs of `exp_dir` that contain at least one robot dir |
-| `discover_baselines(exp_dir)` | Dirs from `baselines/<exp_dir.name>/*/` with robots |
+| `discover_baselines(exp_dir)` | Dirs from `baselines/<exp_dir.name>/*/` with robots OR with `evo_ape.zip` directly (e.g. pre-evaluated Swarm-SLAM) |
 | `discover_robots(exp_dir)` | `{robot_id: robot_dir_name}` — handles CBS-style `Robot N_ts.tum` |
 | `load_gt_trajectories_by_name(gt_dir, names)` | `{name: (timestamps_s, positions, rotations_xyzw)}` |
 

@@ -270,7 +270,7 @@ def find_trajectory_pairs(experiment_folder, gt_folder=None, gt_exp_name=None):
         dirs[:] = [
             d for d in dirs
             if not any(
-                _is_robot_dir(sub)
+                is_robot_dir(sub)
                 for sub in (Path(root) / d).iterdir()
                 if sub.is_dir()
             )

@@ -180,11 +180,12 @@ def plot_snapshot(ax, positions: dict[str, np.ndarray],
             pos = apply_alignment(pos, *alignment)
         ax.plot(pos[:, 0], pos[:, 1], lw=0.6, color=color)
         ax.plot(pos[-1, 0], pos[-1, 1], 'o', ms=1.8, color=color)
-    ax.set_aspect('equal')
-    ax.set_title(title, fontsize=5, pad=1)
-    ax.tick_params(labelsize=4, pad=1)
-    ax.set_xlabel('x (m)', fontsize=4, labelpad=1)
-    ax.set_ylabel('y (m)', fontsize=4, labelpad=1)
+    ax.set_aspect('equal', adjustable='box')
+    ax.grid(True, alpha=0.3, linewidth=0.3)
+    ax.tick_params(labelsize=14, pad=1)
+    ax.text(0.03, 0.03, title, transform=ax.transAxes,
+            fontsize=18, va='bottom', ha='left',
+            bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.75, ec='none'))
 
 
 def main():
@@ -282,13 +283,18 @@ def main():
     n_methods = len(methods)
 
     if args.full:
-        col_w, row_h = 2.0, 2.4
+        col_w, row_h = 3.5, 3.0
     else:
-        col_w, row_h = 1.7, 1.6   # single-column IEEE: 3.5" wide
-    plt.rcParams.update({**IEEE_RC,
-                         'figure.figsize': (col_w * n_cols, row_h * n_methods)})
+        col_w, row_h = 3.5, 3.0
+    plt.rcParams.update({
+        **IEEE_RC,
+        'figure.figsize': (col_w * n_cols, row_h * n_methods),
+        'axes.labelsize': 16,
+        'xtick.labelsize': 14,
+        'ytick.labelsize': 14,
+    })
     fig, axes = plt.subplots(n_methods, n_cols,
-                             sharex=False, sharey=False,
+                             sharex=True, sharey=True,
                              squeeze=False)
 
     # First pass: load all snapshots and compute global bounds from finals
@@ -316,6 +322,15 @@ def main():
     xmax = max(global_x) + pad if global_x else  100
     ymin = min(global_y) - pad if global_y else -100
     ymax = max(global_y) + pad if global_y else  100
+    # Force equal x/y range so adjustable='box' doesn't leave gaps
+    xrange = xmax - xmin
+    yrange = ymax - ymin
+    if xrange > yrange:
+        cy = (ymin + ymax) / 2
+        ymin, ymax = cy - xrange / 2, cy + xrange / 2
+    else:
+        cx = (xmin + xmax) / 2
+        xmin, xmax = cx - yrange / 2, cx + yrange / 2
 
     # Column labels
     if args.full:
@@ -347,10 +362,19 @@ def main():
         for col_idx in range(used, n_cols):
             axes[row_idx][col_idx].set_visible(False)
 
-    for row_idx, name in enumerate(methods):
-        axes[row_idx][0].set_ylabel(f"{method_labels.get(name, name)}\ny (m)", fontsize=4, labelpad=1)
+    # Axis labels only on outer edges
+    for row_idx in range(n_methods):
+        axes[row_idx][0].set_ylabel('y (m)', fontsize=16, labelpad=1)
+        for col_idx in range(1, n_cols):
+            plt.setp(axes[row_idx][col_idx].get_yticklabels(), visible=False)
+            axes[row_idx][col_idx].tick_params(axis='y', length=0)
+    for col_idx in range(n_cols):
+        axes[-1][col_idx].set_xlabel('x (m)', fontsize=16, labelpad=1)
+        for row_idx in range(n_methods - 1):
+            plt.setp(axes[row_idx][col_idx].get_xticklabels(), visible=False)
+            axes[row_idx][col_idx].tick_params(axis='x', length=0)
 
-    plt.tight_layout(pad=0.3, h_pad=0.2, w_pad=0.3)
+    plt.tight_layout(pad=0.3, h_pad=0.0, w_pad=0.0)
 
     suffix = '_full' if args.full else ''
     out = Path(args.output) if args.output else vdir / f'cbs_convergence{suffix}'
