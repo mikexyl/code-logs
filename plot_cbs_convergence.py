@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Plot CBS vs CBS+ convergence snapshots as a 2×3 grid:
+Plot CBS vs CBS+ convergence snapshots as a 2×2 grid:
   rows: CBS, CBS+
-  cols: ~10% iteration, ~50% iteration, final
+  cols: ~20% iteration, final
+Plus an ATE-vs-iterations curve panel at the bottom.
 
 Usage:
     python3 plot_cbs_convergence.py <variant_dir>
@@ -12,13 +13,14 @@ Usage:
 import argparse
 import re
 from pathlib import Path
+from matplotlib.gridspec import GridSpec
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
-from utils.io import load_alignment_from_evo_zip, load_gt_trajectory
+from utils.io import load_alignment_from_evo_zip, load_gt_trajectory, umeyama
 from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig, apply_alignment
 
 
@@ -158,6 +160,125 @@ def get_iteration_for_ts(method_dir: Path, ts: int) -> int | None:
     return None
 
 
+def load_snapshot_with_ts(method_dir: Path, ts: int,
+                          robot_order: list[str], tol: int = 8) -> dict[str, tuple]:
+    """Load {robot_name: (timestamps_s, Nx3 positions)} for a snapshot group."""
+    out = {}
+    for rname in robot_order:
+        dpgo = method_dir / rname / "dpgo"
+        candidates = []
+        for f in dpgo.glob("Robot *_*.tum"):
+            try:
+                fts = int(f.stem.split("_")[-1])
+            except ValueError:
+                continue
+            if abs(fts - ts) <= tol:
+                candidates.append((abs(fts - ts), f))
+        if not candidates:
+            continue
+        candidates.sort(key=lambda x: x[0])
+        rows = []
+        with open(candidates[0][1]) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                p = line.split()
+                if len(p) < 4:
+                    continue
+                rows.append([float(p[0]), float(p[1]), float(p[2]), float(p[3])])
+        if not rows:
+            continue
+        arr = np.array(rows)
+        median_t = np.median(arr[:, 0])
+        mask = np.abs(arr[:, 0] - median_t) < 1e7
+        out[rname] = (arr[mask, 0], arr[mask, 1:4])
+    return out
+
+
+def compute_ate_rmse(robot_ts_pos: dict, robot_order: list[str],
+                     gt_ts_pos: dict, alignment, tol_s: float = 0.5) -> float | None:
+    """Compute ATE RMSE (m) for a snapshot against GT, using nearest-neighbour matching."""
+    errors = []
+    for rname in robot_order:
+        data = robot_ts_pos.get(rname)
+        gt_data = gt_ts_pos.get(rname)
+        if data is None or gt_data is None:
+            continue
+        ts_arr_s, pos = data
+        if alignment is not None:
+            pos = apply_alignment(pos, *alignment)
+        gt_ts_ns, gt_pos = gt_data
+        gt_ts_s = gt_ts_ns / 1e9
+        for ts_s, p in zip(ts_arr_s, pos):
+            idx = np.argmin(np.abs(gt_ts_s - ts_s))
+            if np.abs(gt_ts_s[idx] - ts_s) <= tol_s:
+                errors.append(np.linalg.norm(p - gt_pos[idx]))
+    if not errors:
+        return None
+    return float(np.sqrt(np.mean(np.array(errors) ** 2)))
+
+
+def compute_all_ates(method_dir: Path, tss: list[int], robot_order: list[str],
+                     gt_ts_pos: dict) -> tuple[list, list]:
+    """Compute ATE RMSE at every snapshot. Returns (iteration_numbers, ate_values).
+
+    Alignment is derived via Umeyama from the final snapshot so it is correct
+    for this method's optimization frame (which differs from the main DPGO frame).
+    """
+    import csv as _csv
+    stats_files = list(method_dir.glob("*/dpgo/stats_robot_*.csv"))
+    total_iters = None
+    if stats_files:
+        try:
+            with open(stats_files[0]) as f:
+                rows = list(_csv.DictReader(f))
+            if rows:
+                total_iters = int(rows[-1]['iteration'])
+        except Exception:
+            pass
+
+    n = len(tss)
+    if n == 0:
+        return [], []
+
+    # Compute Umeyama alignment from the final snapshot
+    final_ts_pos = load_snapshot_with_ts(method_dir, tss[-1], robot_order)
+    src_pts, dst_pts = [], []
+    for rname in robot_order:
+        data = final_ts_pos.get(rname)
+        gt_data = gt_ts_pos.get(rname)
+        if data is None or gt_data is None:
+            continue
+        ts_arr_s, pos = data
+        gt_ts_ns, gt_pos = gt_data
+        gt_ts_s = gt_ts_ns / 1e9
+        for ts_s, p in zip(ts_arr_s, pos):
+            idx = np.argmin(np.abs(gt_ts_s - ts_s))
+            if np.abs(gt_ts_s[idx] - ts_s) <= 0.5:
+                src_pts.append(p)
+                dst_pts.append(gt_pos[idx])
+    if len(src_pts) < 3:
+        print(f"  Warning: not enough matched poses for Umeyama in {method_dir.name}")
+        return [], []
+    R, t, s = umeyama(np.array(src_pts), np.array(dst_pts))
+    alignment = (R, t, s)
+
+    iterations, ates = [], []
+    for snap_idx, ts in enumerate(tss):
+        robot_ts_pos = load_snapshot_with_ts(method_dir, ts, robot_order)
+        ate = compute_ate_rmse(robot_ts_pos, robot_order, gt_ts_pos, alignment)
+        if ate is None:
+            continue
+        if total_iters is not None and n > 1:
+            iter_num = round(snap_idx * total_iters / (n - 1)) if snap_idx > 0 else 1
+        else:
+            iter_num = snap_idx
+        iterations.append(iter_num)
+        ates.append(ate)
+    return iterations, ates
+
+
 def plot_snapshot(ax, positions: dict[str, np.ndarray],
                   robot_order: list[str],
                   dpgo_ids: dict[str, int],
@@ -213,7 +334,8 @@ def main():
             print(f"Warning: could not load alignment: {e}")
 
     # Load GT trajectories
-    gt_positions: dict[str, np.ndarray] = {}  # robot_dir_name -> Nx3
+    gt_positions: dict[str, np.ndarray] = {}   # robot_dir_name -> Nx3
+    gt_ts_pos: dict[str, tuple] = {}           # robot_dir_name -> (timestamps_ns, Nx3)
     if args.gt_dir:
         gt_dir = Path(args.gt_dir)
     else:
@@ -226,8 +348,9 @@ def main():
             if rname.startswith('gt_'):
                 continue
             try:
-                _, pos, _ = load_gt_trajectory(str(csv_path))
+                ts_ns, pos, _ = load_gt_trajectory(str(csv_path))
                 gt_positions[rname] = pos
+                gt_ts_pos[rname] = (ts_ns, pos)
             except Exception:
                 pass
         print(f"Loaded GT for {len(gt_positions)} robots from {gt_dir}")
@@ -282,20 +405,28 @@ def main():
     n_cols = max((len(v) for v in method_snap_indices.values()), default=3)
     n_methods = len(methods)
 
-    if args.full:
-        col_w, row_h = 3.5, 3.0
-    else:
-        col_w, row_h = 3.5, 3.0
+    col_w, row_h, ate_h, spacer_h = 3.5, 3.0, 2.0, 0.6
     plt.rcParams.update({
         **IEEE_RC,
-        'figure.figsize': (col_w * n_cols, row_h * n_methods),
+        'figure.figsize': (col_w * n_cols, row_h * n_methods + spacer_h + ate_h),
         'axes.labelsize': 16,
         'xtick.labelsize': 14,
         'ytick.labelsize': 14,
     })
-    fig, axes = plt.subplots(n_methods, n_cols,
-                             sharex=True, sharey=True,
-                             squeeze=False)
+    fig = plt.figure()
+    gs = GridSpec(n_methods + 2, n_cols,
+                  height_ratios=[row_h] * n_methods + [spacer_h, ate_h],
+                  hspace=0.05, wspace=0.05,
+                  figure=fig)
+    axes = [[fig.add_subplot(gs[r, c]) for c in range(n_cols)]
+            for r in range(n_methods)]
+    # Share x/y among trajectory panels
+    for r in range(n_methods):
+        for c in range(n_cols):
+            if r > 0 or c > 0:
+                axes[r][c].sharex(axes[0][0])
+                axes[r][c].sharey(axes[0][0])
+    ate_ax = fig.add_subplot(gs[n_methods + 1, :])
 
     # First pass: load all snapshots and compute global bounds from finals
     all_snapshots = {}  # (row_idx, col_idx) -> (name, positions)
@@ -374,7 +505,28 @@ def main():
             plt.setp(axes[row_idx][col_idx].get_xticklabels(), visible=False)
             axes[row_idx][col_idx].tick_params(axis='x', length=0)
 
-    plt.tight_layout(pad=0.3, h_pad=0.0, w_pad=0.0)
+    # ATE vs iterations curve
+    method_colors = {'cbs': '#4C72B0', 'cbs_plus': '#DD8452'}
+    if gt_ts_pos:
+        print("Computing ATE vs iterations...")
+        for name, mdir in methods.items():
+            tss = all_tss.get(name, [])
+            iters, ates = compute_all_ates(mdir, tss, robot_order, gt_ts_pos)
+            if iters:
+                label = method_labels.get(name, name)
+                color = method_colors.get(name, None)
+                ate_ax.plot(iters, ates, marker='o', ms=3, lw=1.2,
+                            label=label, color=color)
+                print(f"  {name}: {len(iters)} snapshots, "
+                      f"final ATE={ates[-1]:.3f} m")
+    ate_ax.set_yscale('log')
+    ate_ax.set_xlabel('Iteration', fontsize=16)
+    ate_ax.set_ylabel('ATE RMSE (m)', fontsize=16)
+    ate_ax.legend(fontsize=14, framealpha=0.9)
+    ate_ax.grid(True, alpha=0.3, linewidth=0.3)
+    ate_ax.tick_params(labelsize=14)
+
+    plt.tight_layout(pad=0.5, h_pad=0.3, w_pad=0.0)
 
     suffix = '_full' if args.full else ''
     out = Path(args.output) if args.output else vdir / f'cbs_convergence{suffix}'

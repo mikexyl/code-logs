@@ -418,43 +418,97 @@ def main() -> None:
                     step_xs_ate.append(x); step_ys_ate.append(y)
 
             plt.rcParams.update({**IEEE_RC, 'figure.figsize': (3.5, 2.0)})
-            fig_ate, ax_ate = plt.subplots()
 
-            ax_ate.plot(step_xs_ate, step_ys_ate, color='#2ecc71', linewidth=0.8,
-                        linestyle='--', alpha=0.7, zorder=1, label='Pareto front')
+            # Detect if broken axis is needed (outlier > 3× second-largest bw)
+            bw_sorted = sorted(e['bw'] for e in ate_entries)
+            need_break = (len(bw_sorted) >= 2 and
+                          bw_sorted[-1] > 3 * bw_sorted[-2])
+
+            if need_break:
+                break_thresh = (bw_sorted[-2] + bw_sorted[-1]) / 2
+                normal_entries  = [e for e in ate_entries if e['bw'] <= break_thresh]
+                outlier_entries = [e for e in ate_entries if e['bw'] >  break_thresh]
+                fig_ate, (ax_left, ax_right) = plt.subplots(
+                    1, 2, sharey=True,
+                    gridspec_kw={'width_ratios': [3, 1], 'wspace': 0.04})
+                axes_ate = [ax_left, ax_right]
+                ax_ate = ax_left   # primary for labels / legend
+            else:
+                normal_entries  = ate_entries
+                outlier_entries = []
+                fig_ate, ax_ate = plt.subplots()
+                axes_ate = [ax_ate]
+                ax_left = ax_ate
+                ax_right = None
+
+            # Pareto front on left axis only
+            ax_left.plot(step_xs_ate, step_ys_ate, color='#2ecc71', linewidth=0.8,
+                         linestyle='--', alpha=0.7, zorder=1, label='Pareto front')
 
             label_offsets_ate: dict[str, tuple[float, float]] = {
                 'ns-cs':        ( 0.04,  0.04),
                 'no-scoring':   ( 0.04, -0.06),
                 'Kimera-Multi': ( 0.00, -0.07),
             }
-            for i, e in enumerate(ate_entries):
-                color  = ROBOT_COLORS[i % len(ROBOT_COLORS)]
-                marker = 's' if e['is_baseline'] else 'o'
-                size   = 36 if e['is_baseline'] else 40
-                ax_ate.scatter(e['bw'], e['ate'], color=color, marker=marker,
+
+            def _plot_entries(ax, entries, span):
+                for i, e in enumerate(ate_entries):
+                    if e not in entries:
+                        continue
+                    color  = ROBOT_COLORS[i % len(ROBOT_COLORS)]
+                    marker = 's' if e['is_baseline'] else 'o'
+                    size   = 36 if e['is_baseline'] else 40
+                    ax.scatter(e['bw'], e['ate'], color=color, marker=marker,
                                s=size, zorder=4,
                                edgecolors='black' if e['is_baseline'] else 'none',
                                linewidths=0.6)
-                rel = label_offsets_ate.get(e['label'], (0.02, 0.04))
-                dx = rel[0] * bw_span_ate
-                dy = rel[1] * ate_span
-                ax_ate.annotate(e['label'], xy=(e['bw'], e['ate']),
+                    rel = label_offsets_ate.get(e['label'], (0.02, 0.04))
+                    dx = rel[0] * span
+                    dy = rel[1] * ate_span
+                    ax.annotate(e['label'], xy=(e['bw'], e['ate']),
                                 xytext=(e['bw'] + dx, e['ate'] + dy),
                                 fontsize=4.5,
                                 arrowprops=dict(arrowstyle='-', color='#888888', lw=0.3),
                                 zorder=5)
 
-            ax_ate.annotate('← better', xy=(bw_span_ate * 0.75, ate_ymin + ate_span * 0.07),
-                            fontsize=4, color='#555555', style='italic',
-                            xytext=(bw_span_ate * 0.75, ate_ymin + ate_span * 0.07))
+            normal_max_bw  = max(e['bw'] for e in normal_entries) if normal_entries else 1
+            normal_span    = normal_max_bw * 1.15
+            _plot_entries(ax_left, normal_entries, normal_span)
+            ax_left.set_xlim(left=0, right=normal_span)
 
-            ax_ate.set_xlabel('Total Comm. Bandwidth (MB)  [BoW + VLC, lower →]')
-            ax_ate.set_ylabel('ATE RMSE (m)  [lower is better ↓]')
-            ax_ate.set_title(f'{exp} — Bandwidth vs. ATE', fontsize=7)
-            ax_ate.grid(True, alpha=0.25, linestyle='--', linewidth=0.3)
-            ax_ate.set_xlim(left=0, right=bw_span_ate)
-            ax_ate.set_ylim(bottom=ate_ymin, top=ate_ymax)
+            if need_break and outlier_entries:
+                out_bw   = outlier_entries[0]['bw']
+                out_span = out_bw * 0.3
+                _plot_entries(ax_right, outlier_entries, out_span)
+                ax_right.set_xlim(out_bw - out_span * 0.3, out_bw + out_span * 0.7)
+
+                # Hide inner spines
+                ax_left.spines['right'].set_visible(False)
+                ax_right.spines['left'].set_visible(False)
+                ax_left.tick_params(right=False)
+                ax_right.tick_params(left=False)
+
+                # Draw diagonal break marks
+                d = 0.015
+                kw = dict(transform=ax_left.transAxes, color='k', lw=0.8, clip_on=False)
+                ax_left.plot((1 - d, 1 + d), (-d, +d), **kw)
+                ax_left.plot((1 - d, 1 + d), (1 - d, 1 + d), **kw)
+                kw.update(transform=ax_right.transAxes)
+                ax_right.plot((-d, +d), (-d, +d), **kw)
+                ax_right.plot((-d, +d), (1 - d, 1 + d), **kw)
+
+                # Shared x-label centred across both panels
+                fig_ate.text(0.5, -0.02, 'Total Comm. Bandwidth (MB)',
+                             ha='center', va='top',
+                             fontsize=plt.rcParams['axes.labelsize'])
+            else:
+                ax_ate.set_xlabel('Total Comm. Bandwidth (MB)')
+
+            for ax in axes_ate:
+                ax.grid(True, alpha=0.25, linestyle='--', linewidth=0.3)
+                ax.set_ylim(bottom=ate_ymin, top=ate_ymax)
+
+            ax_left.set_ylabel('ATE RMSE (m)')
 
             handles_ate = [
                 _mlines.Line2D([], [], color='gray', marker='o', linestyle='None',
@@ -464,8 +518,8 @@ def main() -> None:
                                markeredgewidth=0.5, label='baseline'),
             ]
             if n_bl_ate > 0:
-                ax_ate.legend(handles=handles_ate, fontsize=4.5,
-                              loc='upper right', framealpha=0.7)
+                ax_left.legend(handles=handles_ate, fontsize=4.5,
+                               loc='upper right', framealpha=0.7)
 
             plt.tight_layout()
             out_ate = folder / 'scalability_ate'

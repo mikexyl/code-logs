@@ -19,9 +19,14 @@
 ns-as:         "Ours"
 ns-ncs-nproj:  "w.o. Aug"
 ns:            "w.o. AS"
+ns-cs:         "w. CS" 
 # ns-as-l:       "NS+AS-L"
 ns-as-vpr:     "NS+AS+VPR"
 mixvpr:        "MixVPR"
+jist:          "JIST"
+jist-cs:       "JIST+CS"
+jist-aug:      "JIST+Aug"
+jist-aug-cs:   "JIST+Aug+CS"
 
 # ── Baselines ──────────────────────────────────────────────────────────────────
 Kimera-Multi:  "Kimera-Multi"

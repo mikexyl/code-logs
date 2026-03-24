@@ -419,7 +419,7 @@ def write_bandwidth_npy(out_path: Path, total_bytes: float) -> None:
     """
     total_mb = total_bytes / 1e6
     data = {
-        't_sec':   np.array([0.0, total_mb]),   # dummy time axis
+        't_sec':   np.array([0.0, 1.0]),        # dummy time axis (single cumulative value)
         'bow_MB':  np.array([0.0, total_mb]),
         'vlc_MB':  np.array([0.0, 0.0]),
         'cbs_MB':  np.array([0.0, 0.0]),

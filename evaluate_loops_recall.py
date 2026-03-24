@@ -1125,6 +1125,9 @@ def main() -> None:
     # ------------------------------------------------------------------
     print(f'\n--- Outlier analysis (trans > max({args.trans_abs:.1f}m, {args.trans_rel*100:.0f}% GT dist), rot_thr={args.rot_thr}°) ---')
 
+    if 'aliases' not in dir():
+        aliases = load_variant_aliases()
+
     if not gt_poses:
         print('  No GT pose files found — skipping outlier analysis.')
         return

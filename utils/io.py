@@ -287,6 +287,8 @@ def discover_robots(exp_dir, yaml_fallback: bool = True) -> dict:
 
     if yaml_fallback:
         yaml_path = exp_dir / 'robot_names.yaml'
+        if not yaml_path.exists():
+            yaml_path = exp_dir.parent / 'robot_names.yaml'
         if yaml_path.exists():
             with open(yaml_path) as f:
                 data = _yaml.safe_load(f)

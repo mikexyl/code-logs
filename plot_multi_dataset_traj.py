@@ -25,7 +25,7 @@ from utils.plot import IEEE_RC, ROBOT_COLORS, save_fig, apply_alignment, find_tu
 
 BASE = Path(__file__).parent
 
-_DATASET_IDS = ['g123', 'g156', 'g2345', 'a12', 'gate']
+_DATASET_IDS = ['g123', 'g156', 'g2345', 'a12', 'a5678', 'gate']
 
 def _load_dataset_aliases():
     p = BASE / 'dataset_aliases.yaml'
@@ -191,10 +191,10 @@ def _draw_panel(ax, aligned, gt, label, legend_handles, robot_order, loop_lines=
         for pt1, pt2 in loop_lines:
             ax.plot([pt1[0], pt2[0]], [pt1[1], pt2[1]],
                     color='#CC2222', lw=1.2, alpha=0.85, zorder=10)
-            ax.plot(pt1[0], pt1[1], 'o', color='#CC2222', ms=6.0,
-                    mew=1.0, mfc='none', zorder=11)
-            ax.plot(pt2[0], pt2[1], 'o', color='#CC2222', ms=6.0,
-                    mew=1.0, mfc='none', zorder=11)
+            ax.plot(pt1[0], pt1[1], 'o', color='#CC2222', ms=3.0,
+                    mew=0.0, mfc='#CC2222', alpha=0.5, zorder=11)
+            ax.plot(pt2[0], pt2[1], 'o', color='#CC2222', ms=3.0,
+                    mew=0.0, mfc='#CC2222', alpha=0.5, zorder=11)
         legend_handles['__loops__'] = '#CC2222'
 
     ax.set_aspect('equal', adjustable='datalim')
