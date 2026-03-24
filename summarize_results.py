@@ -46,36 +46,42 @@ def get_ate_rmse(variant_dir: Path):
 
 def get_recall_at_30(variant_dir: Path):
     """
-    Compute cumulative Recall for loops with rotation <= 30 degrees.
-    Aggregates n_inlier / n_total across all pairs for buckets 0-10, 10-20, 20-30.
+    Compute cumulative recall for loops with rotation <= 30 degrees (includes outliers).
+    Returns (detected_recall, inlier_recall) or (None, None).
     """
     csv_path = variant_dir / "loops_recall.csv"
     if not csv_path.exists():
-        return None
+        return None, None
     try:
         df = pd.read_csv(csv_path)
         sub = df[df["bucket_max"] <= 30]
-        total_detected = sub["n_detected"].sum()
         total_gt = sub["n_total"].sum()
         if total_gt == 0:
-            return None
-        return total_detected / total_gt
+            return None, None
+        detected = sub["n_detected"].sum() / total_gt
+        inlier = sub["n_inlier"].sum() / total_gt
+        return detected, inlier
     except Exception:
-        return None
+        return None, None
 
 
 def get_bandwidth(exp_dir: Path, variant_name: str):
     """
-    Extract total bandwidth (BoW + VLC + CBS) in MB from *_bandwidth.npy.
-    Looks in exp_dir for <exp>-<variant>_bandwidth.npy or <variant>_bandwidth.npy,
-    and also in variant_dir itself.
+    Extract total bandwidth (BoW + VLC + CBS) in MB.
+
+    Priority:
+    1. *_bandwidth.npy (pre-extracted from .rrd)
+    2. distributed/lcd_log.csv per robot (bow_bytes + vlc_bytes, final row)
+    3. dpgo/stats_robot_*.csv per robot (bytes_sent, CBS-only variants)
     """
     exp_name = exp_dir.name
+    variant_dir = exp_dir / variant_name
 
+    # 1. Pre-extracted .npy
     candidates = [
         exp_dir / f"{exp_name}-{variant_name}_bandwidth.npy",
         exp_dir / f"{variant_name}_bandwidth.npy",
-        exp_dir / variant_name / f"{variant_name}_bandwidth.npy",
+        variant_dir / f"{variant_name}_bandwidth.npy",
     ]
     for p in candidates:
         if p.exists():
@@ -85,6 +91,44 @@ def get_bandwidth(exp_dir: Path, variant_name: str):
                 return total
             except Exception:
                 continue
+
+    # 2. lcd_log.csv: sum final bow_bytes + vlc_bytes across all robots
+    total_bytes = 0.0
+    found_lcd = False
+    for robot_dir in sorted(variant_dir.iterdir()) if variant_dir.is_dir() else []:
+        lcd = robot_dir / "distributed" / "lcd_log.csv"
+        if lcd.exists():
+            try:
+                import csv as _csv
+                with open(lcd) as f:
+                    rows = [{k.strip(): v for k, v in row.items()} for row in _csv.DictReader(f)]
+                if rows:
+                    last = rows[-1]
+                    total_bytes += float(last.get("bow_bytes", 0) or 0)
+                    total_bytes += float(last.get("vlc_bytes", 0) or 0)
+                    found_lcd = True
+            except Exception:
+                pass
+    if found_lcd:
+        return total_bytes / 1e6
+
+    # 3. stats_robot_*.csv: sum final bytes_sent across all robots (CBS-only)
+    total_bytes = 0.0
+    found_stats = False
+    for robot_dir in sorted(variant_dir.iterdir()) if variant_dir.is_dir() else []:
+        for stats_file in sorted((robot_dir / "dpgo").glob("stats_robot_*.csv")) if (robot_dir / "dpgo").is_dir() else []:
+            try:
+                import csv as _csv
+                with open(stats_file) as f:
+                    rows = list(_csv.DictReader(f))
+                if rows:
+                    total_bytes += float(rows[-1].get("bytes_sent", 0) or 0)
+                    found_stats = True
+            except Exception:
+                pass
+    if found_stats:
+        return total_bytes / 1e6
+
     return None
 
 
@@ -188,6 +232,28 @@ def get_algebraic_connectivity(variant_dir: Path):
         return None
 
 
+def has_no_loops_detected(variant_dir: Path) -> bool:
+    """Return True if the variant has distributed/ dirs but zero inter-robot loop closures detected.
+
+    Checks raw loop_closures.csv files (not loops_recall.csv, which only counts loops that
+    matched a GT pair and would miss false-positive detections).
+    Returns False if no distributed/ dirs exist (CBS-only variants — unknown, not zero).
+    """
+    lc_files = list(variant_dir.glob("*/distributed/loop_closures.csv"))
+    if not lc_files:
+        return False  # No distributed dir — can't determine, don't flag
+    total_loops = 0
+    for lc in lc_files:
+        try:
+            import csv as _csv
+            with open(lc) as f:
+                rows = list(_csv.DictReader(f))
+            total_loops += len(rows)
+        except Exception:
+            pass
+    return total_loops == 0
+
+
 def is_robot_dir(d: Path) -> bool:
     return d.is_dir() and ((d / "distributed").is_dir() or (d / "dpgo").is_dir())
 
@@ -229,10 +295,11 @@ def main():
             if allowed_variants is not None and vdir.name not in allowed_variants:
                 continue
             ate = get_ate_rmse(vdir)
-            recall30 = get_recall_at_30(vdir)
+            recall30, inlier_recall30 = get_recall_at_30(vdir)
             bw = get_bandwidth(exp_dir, vdir.name)
             gv_pr = get_gv_pr_ratio(exp_dir, vdir.name)
             ac = get_algebraic_connectivity(vdir)
+            no_loops = has_no_loops_detected(vdir)
 
             # Skip variants with no results at all
             if ate is None and recall30 is None and bw is None and gv_pr is None and ac is None:
@@ -243,12 +310,14 @@ def main():
                 "variant": vdir.name,
                 "ate_rmse_m": round(ate, 4) if ate is not None else "",
                 "recall_at_30deg": round(recall30, 4) if recall30 is not None else "",
+                "inlier_recall_at_30deg": round(inlier_recall30, 4) if inlier_recall30 is not None else "",
                 "total_bw_MB": round(bw, 3) if bw is not None else "",
                 "gv_pr_ratio": round(gv_pr, 4) if gv_pr is not None else "",
                 "algebraic_connectivity": f"{ac:.4e}" if ac is not None else "",
+                "no_loops_detected": "TRUE" if no_loops else "",
             })
 
-    df = pd.DataFrame(rows, columns=["experiment", "variant", "ate_rmse_m", "recall_at_30deg", "total_bw_MB", "gv_pr_ratio", "algebraic_connectivity"])
+    df = pd.DataFrame(rows, columns=["experiment", "variant", "ate_rmse_m", "recall_at_30deg", "inlier_recall_at_30deg", "total_bw_MB", "gv_pr_ratio", "algebraic_connectivity", "no_loops_detected"])
     out_path = ROOT / "summary_results.csv"
     df.to_csv(out_path, index=False)
     print(f"Saved {len(df)} rows to {out_path}")

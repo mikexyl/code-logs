@@ -416,7 +416,7 @@ def main():
     fig = plt.figure()
     gs = GridSpec(n_methods + 2, n_cols,
                   height_ratios=[row_h] * n_methods + [spacer_h, ate_h],
-                  hspace=0.05, wspace=0.05,
+                  hspace=0.05, wspace=0.02,
                   figure=fig)
     axes = [[fig.add_subplot(gs[r, c]) for c in range(n_cols)]
             for r in range(n_methods)]
@@ -521,12 +521,20 @@ def main():
                       f"final ATE={ates[-1]:.3f} m")
     ate_ax.set_yscale('log')
     ate_ax.set_xlabel('Iteration', fontsize=16)
-    ate_ax.set_ylabel('ATE RMSE (m)', fontsize=16)
+    ate_ax.set_ylabel('ATE (m)', fontsize=16)
     ate_ax.legend(fontsize=14, framealpha=0.9)
     ate_ax.grid(True, alpha=0.3, linewidth=0.3)
     ate_ax.tick_params(labelsize=14)
 
     plt.tight_layout(pad=0.5, h_pad=0.3, w_pad=0.0)
+    # Align ATE axes left/right edges to the trajectory grid
+    fig.canvas.draw()
+    traj_x0 = min(axes[r][0].get_position().x0 for r in range(n_methods))
+    traj_x1 = max(axes[r][n_cols - 1].get_position().x1
+                  for r in range(n_methods)
+                  if axes[r][n_cols - 1].get_visible())
+    pos = ate_ax.get_position()
+    ate_ax.set_position([traj_x0, pos.y0, traj_x1 - traj_x0, pos.height])
 
     suffix = '_full' if args.full else ''
     out = Path(args.output) if args.output else vdir / f'cbs_convergence{suffix}'

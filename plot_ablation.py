@@ -145,6 +145,9 @@ def plot_bandwidth_comparison(paths: list[Path], folder: Path,
     if not datasets_labelled:
         print("  No parseable bandwidth data — skipping.")
         return
+    # Normalise t_sec to start from 0 for each dataset (they may be absolute timestamps)
+    datasets_labelled = [(lbl, {**d, "t_sec": d["t_sec"] - d["t_sec"][0]})
+                         for lbl, d in datasets_labelled]
     t_end = min(d["t_sec"][-1] for _, d in datasets_labelled)
 
     plt.rcParams.update(IEEE_RC)
@@ -204,6 +207,9 @@ def plot_loops_comparison(paths: list[Path], folder: Path,
     if not datasets_labelled:
         print("  No parseable loops data — skipping.")
         return
+    # Normalise t_sec to start from 0 (timestamps may be absolute)
+    datasets_labelled = [(lbl, {**d, "t_sec": d["t_sec"] - d["t_sec"][0]})
+                         for lbl, d in datasets_labelled]
     t_end = min(d["t_sec"][-1] for _, d in datasets_labelled)
 
     # Load inlier counts (variant_name → n_inliers) from companion file
