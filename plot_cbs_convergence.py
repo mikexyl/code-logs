@@ -317,6 +317,8 @@ def main():
     ap.add_argument('--output', default=None)
     ap.add_argument('--full', action='store_true',
                     help='Generate full multi-snapshot plot (all snapshots)')
+    ap.add_argument('--final-only', action='store_true',
+                    help='Generate a single-column plot showing only the final trajectory')
     args = ap.parse_args()
 
     vdir = Path(args.variant_dir)
@@ -397,36 +399,44 @@ def main():
             continue
         if args.full:
             method_snap_indices[name] = list(range(n))
+        elif args.final_only:
+            method_snap_indices[name] = [n - 1]
         else:
             i_20 = round(0.20 * (n - 1))
             i_f  = n - 1
             method_snap_indices[name] = [i_20, i_f]
 
-    n_cols = max((len(v) for v in method_snap_indices.values()), default=3)
     n_methods = len(methods)
+    # For --final-only: one row, one column per method
+    if args.final_only:
+        n_cols = n_methods
+        n_traj_rows = 1
+    else:
+        n_cols = max((len(v) for v in method_snap_indices.values()), default=3)
+        n_traj_rows = n_methods
 
     col_w, row_h, ate_h, spacer_h = 3.5, 3.0, 2.0, 0.6
     plt.rcParams.update({
         **IEEE_RC,
-        'figure.figsize': (col_w * n_cols, row_h * n_methods + spacer_h + ate_h),
+        'figure.figsize': (col_w * n_cols, row_h * n_traj_rows + spacer_h + ate_h),
         'axes.labelsize': 16,
         'xtick.labelsize': 14,
         'ytick.labelsize': 14,
     })
     fig = plt.figure()
-    gs = GridSpec(n_methods + 2, n_cols,
-                  height_ratios=[row_h] * n_methods + [spacer_h, ate_h],
+    gs = GridSpec(n_traj_rows + 2, n_cols,
+                  height_ratios=[row_h] * n_traj_rows + [spacer_h, ate_h],
                   hspace=0.05, wspace=0.02,
                   figure=fig)
     axes = [[fig.add_subplot(gs[r, c]) for c in range(n_cols)]
-            for r in range(n_methods)]
+            for r in range(n_traj_rows)]
     # Share x/y among trajectory panels
-    for r in range(n_methods):
+    for r in range(n_traj_rows):
         for c in range(n_cols):
             if r > 0 or c > 0:
                 axes[r][c].sharex(axes[0][0])
                 axes[r][c].sharey(axes[0][0])
-    ate_ax = fig.add_subplot(gs[n_methods + 1, :])
+    ate_ax = fig.add_subplot(gs[n_traj_rows + 1, :])
 
     # First pass: load all snapshots and compute global bounds from finals
     all_snapshots = {}  # (row_idx, col_idx) -> (name, positions)
@@ -471,6 +481,8 @@ def main():
             for col_idx, snap_idx in enumerate(snap_idxs):
                 pct = int(round(100 * snap_idx / max(n - 1, 1)))
                 col_labels_map[(name, col_idx)] = f"{pct}%"
+    elif args.final_only:
+        col_labels_map = {(name, 0): 'Final' for name in methods}
     else:
         fixed = ['100 iterations', '500 iterations']
         col_labels_map = {(name, i): fixed[i]
@@ -478,7 +490,11 @@ def main():
 
     # Second pass: draw
     for (row_idx, col_idx), (name, positions) in all_snapshots.items():
-        ax = axes[row_idx][col_idx]
+        # --final-only: each method is a column in the single traj row
+        if args.final_only:
+            ax = axes[0][row_idx]
+        else:
+            ax = axes[row_idx][col_idx]
         lbl = col_labels_map.get((name, col_idx), '')
         title = f"{method_labels.get(name, name)} {lbl}"
         plot_snapshot(ax, positions, robot_order, dpgo_ids, alignment, title,
@@ -487,23 +503,24 @@ def main():
         ax.set_ylim(ymin, ymax)
 
     # Hide unused axes (if methods have different snapshot counts)
-    for row_idx in range(n_methods):
-        name = list(methods.keys())[row_idx]
-        used = len(method_snap_indices.get(name, []))
-        for col_idx in range(used, n_cols):
-            axes[row_idx][col_idx].set_visible(False)
+    if not args.final_only:
+        for row_idx in range(n_methods):
+            name = list(methods.keys())[row_idx]
+            used = len(method_snap_indices.get(name, []))
+            for col_idx in range(used, n_cols):
+                axes[row_idx][col_idx].set_visible(False)
 
     # Axis labels only on outer edges
-    for row_idx in range(n_methods):
-        axes[row_idx][0].set_ylabel('y (m)', fontsize=16, labelpad=1)
-        for col_idx in range(1, n_cols):
-            plt.setp(axes[row_idx][col_idx].get_yticklabels(), visible=False)
-            axes[row_idx][col_idx].tick_params(axis='y', length=0)
-    for col_idx in range(n_cols):
-        axes[-1][col_idx].set_xlabel('x (m)', fontsize=16, labelpad=1)
-        for row_idx in range(n_methods - 1):
-            plt.setp(axes[row_idx][col_idx].get_xticklabels(), visible=False)
-            axes[row_idx][col_idx].tick_params(axis='x', length=0)
+    for r in range(n_traj_rows):
+        axes[r][0].set_ylabel('y (m)', fontsize=16, labelpad=1)
+        for c in range(1, n_cols):
+            plt.setp(axes[r][c].get_yticklabels(), visible=False)
+            axes[r][c].tick_params(axis='y', length=0)
+    for c in range(n_cols):
+        axes[-1][c].set_xlabel('x (m)', fontsize=16, labelpad=1)
+        for r in range(n_traj_rows - 1):
+            plt.setp(axes[r][c].get_xticklabels(), visible=False)
+            axes[r][c].tick_params(axis='x', length=0)
 
     # ATE vs iterations curve
     method_colors = {'cbs': '#4C72B0', 'cbs_plus': '#DD8452'}
@@ -529,14 +546,14 @@ def main():
     plt.tight_layout(pad=0.5, h_pad=0.3, w_pad=0.0)
     # Align ATE axes left/right edges to the trajectory grid
     fig.canvas.draw()
-    traj_x0 = min(axes[r][0].get_position().x0 for r in range(n_methods))
+    traj_x0 = min(axes[r][0].get_position().x0 for r in range(n_traj_rows))
     traj_x1 = max(axes[r][n_cols - 1].get_position().x1
-                  for r in range(n_methods)
+                  for r in range(n_traj_rows)
                   if axes[r][n_cols - 1].get_visible())
     pos = ate_ax.get_position()
     ate_ax.set_position([traj_x0, pos.y0, traj_x1 - traj_x0, pos.height])
 
-    suffix = '_full' if args.full else ''
+    suffix = '_full' if args.full else ('_final' if args.final_only else '')
     out = Path(args.output) if args.output else vdir / f'cbs_convergence{suffix}'
     save_fig(fig, out)
     plt.close(fig)
